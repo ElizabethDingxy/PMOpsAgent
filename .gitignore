@@ -19,3 +19,5 @@ data/feishu-oauth-token.json
 data/feishu-oauth-state.json
 data/feishu-event-debug.jsonl
 data/feishu-card-debug.jsonl
+AGENTS.md
+ROADMAP.md
