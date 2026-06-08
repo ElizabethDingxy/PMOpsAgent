@@ -1,0 +1,6 @@
+metric,value,period,segment,note
+new_user_activation_rate,42%,2026-06,all_users,首周完成一次有效分析的用户占比
+analysis_completion_rate,76%,2026-06,all_users,从上传反馈到生成结果的完成率
+prd_creation_rate,18%,2026-06,pm_users,分析后创建飞书 PRD 的比例
+tapd_creation_rate,11%,2026-06,pm_users,分析后创建 TAPD 需求或任务的比例
+weekly_active_reviewers,32,2026-W23,pm_team,每周参与评审或审批的人数
