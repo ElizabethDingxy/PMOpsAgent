@@ -34,8 +34,8 @@ PMOpsAgent 是一个面向中国团队的 AI 产品经理助手 Demo。用户上
 - 飞书群内 @机器人触发示例反馈或飞书表格分析
 - 飞书群内 @机器人自然语言意图路由
 - 飞书 OAuth 授权后自动搜索用户可访问的多维表格 Base
-- 产品上下文记忆：按项目隔离保存历史 PRD、MVP、RICE、研发任务和用户证据，并支持模糊搜索
-- 历史运行保存与回放
+- 产品上下文记忆：按项目隔离保存历史 PRD、MVP、RICE、研发任务和用户证据，并支持模糊与语义检索
+- 历史运行保存与回放：基于本地文件数据库（data/runs/*.json）的持久化存储
 - 飞书多维表格读取用户反馈
 - 用户确认后创建飞书 PRD 文档
 - 用户确认后创建 TAPD 需求与任务
@@ -57,7 +57,7 @@ PMOpsAgent 是一个面向中国团队的 AI 产品经理助手 Demo。用户上
 - 飞书任务
 - Gitee
 - MasterGo / Pixso
-- 数据库、登录系统、多用户权限
+- 登录系统、多用户权限
 - 无人工确认的自动创建真实任务
 
 ## 本地运行步骤
@@ -404,12 +404,12 @@ FEISHU_EVENT_VERIFICATION_TOKEN=飞书后台的 Verification Token
 8. 保存并发布应用，按飞书要求完成管理员审批。
 9. 修改 `.env.local` 后重启 `npm run dev`。
 
-如果你用 cpolar，本地联调时两个公网地址通常是：
+公网回调地址（ECS 域名或本地开发穿透域名）通常形如：
 
 ```text
-事件订阅地址：https://你的cpolar域名/api/feishu/events
-卡片回调地址：https://你的cpolar域名/api/feishu/card-actions
-OAuth 回调地址：https://你的cpolar域名/api/feishu/oauth/callback
+事件订阅地址：https://你的公网域名/api/feishu/events
+卡片回调地址：https://你的公网域名/api/feishu/card-actions
+OAuth 回调地址：https://你的公网域名/api/feishu/oauth/callback
 ```
 
 注意：飞书卡片上的“创建 PRD”和“创建 TAPD”仍然是人工确认触发，不是机器人自动执行。群聊自然语言也遵循同样边界：先准备待确认动作，再由用户确认执行。
@@ -486,11 +486,6 @@ FEISHU_BITABLE_WORKSPACE_BASES=https://你的租户.feishu.cn/base/base_token_1|
 https://你的公网域名/api/feishu/oauth/callback
 ```
 
-如果你本地用 cpolar，就填：
-
-```text
-https://你的cpolar域名/api/feishu/oauth/callback
-```
 
 4. 进入“权限管理”，切换到或筛选“用户身份权限”，申请 OAuth 和云文档相关权限。这里要特别注意：自动搜索 Base 用的是 `user_access_token`，所以必须是“用户身份权限”，只申请“应用身份权限”不够。
 
