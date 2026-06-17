@@ -5,7 +5,7 @@ import {
 } from "@/lib/approvals/approvalStore"
 import { createFeishuPrdDocument, FeishuDocumentError } from "@/lib/feishu/createPrdDocument"
 import { sendFeishuTextMessage, FeishuWebhookError } from "@/lib/feishu/sendWebhook"
-import { mergeProductMemories } from "@/lib/memory/productMemoryStore"
+import { mergeProductMemories, readProductMemoryByKey, deriveProjectKey } from "@/lib/memory/productMemoryStore"
 import { readSavedRunById, writeSavedRun, RunStoreError } from "@/lib/runs/runStore"
 import { createTapdWorkItems, TapdError, type TapdWorkItemsConfigInput } from "@/lib/tapd/createTapdWorkItems"
 import { appendTraceEvent, getTraceEvents } from "@/lib/trace/traceStore"
@@ -153,13 +153,13 @@ export async function createPrdDocumentForResult(result: AgentResult, runId?: st
     throw new AgentActionError("ACTION_PAYLOAD_INVALID", "缺少 PRD 草稿。", "请先运行 PMOpsAgent 生成 PRD 草稿。")
   }
 
-  appendActionTrace(runId, createTraceEvent("feishu_prd_document_creating", "创建飞书 PRD", "running", "正在创建飞书 PRD 文档。"))
+  appendActionTrace(runId, createTraceEvent("feishu_prd_document", "创建飞书 PRD", "running", "正在创建飞书 PRD 文档。"))
 
   try {
     const document = await createFeishuPrdDocument(result)
     const trace = appendActionTrace(
       runId,
-      createTraceEvent("feishu_prd_document_created", "创建飞书 PRD", "success", "飞书 PRD 文档已创建。", {
+      createTraceEvent("feishu_prd_document", "创建飞书 PRD", "success", "飞书 PRD 文档已创建。", {
         documentId: document.documentId,
         url: document.url,
       }),
@@ -170,8 +170,8 @@ export async function createPrdDocumentForResult(result: AgentResult, runId?: st
       trace,
     }
   } catch (error) {
-    appendActionTrace(runId, createTraceEvent("feishu_prd_document_failed", "创建飞书 PRD", "failed", toErrorMessage(error)))
-    throw normalizeActionError(error, "飞书 PRD 文档创建失败。", "请检查飞书应用权限、发布状态、文档权限和网络连接。")
+    appendActionTrace(runId, createTraceEvent("feishu_prd_document", "创建飞书 PRD", "failed", toErrorMessage(error)))
+    throw normalizeActionError(error, "飞书 PRD 文档创建失败。", "请检查飞书应用权限、发布状态、文档权限 and 网络连接。")
   }
 }
 
@@ -186,13 +186,13 @@ export async function createTapdWorkItemsForResult(
   }
 
   const selectedIndexes = selectedTaskIndexes ?? result.engineeringTasks.map((_, index) => index)
-  appendActionTrace(runId, createTraceEvent("tapd_work_items_creating", "创建 TAPD 任务", "running", "正在创建 TAPD 需求与任务。"))
+  appendActionTrace(runId, createTraceEvent("tapd_work_items", "创建 TAPD 任务", "running", "正在创建 TAPD 需求与任务。"))
 
   try {
     const created = await createTapdWorkItems(result, selectedIndexes, tapdConfig)
     const trace = appendActionTrace(
       runId,
-      createTraceEvent("tapd_work_items_created", "创建 TAPD 任务", "success", `已创建 1 个 TAPD 需求和 ${created.tasks.length} 个 TAPD 任务。`, {
+      createTraceEvent("tapd_work_items", "创建 TAPD 任务", "success", `已创建 1 个 TAPD 需求和 ${created.tasks.length} 个 TAPD 任务。`, {
         story: created.story,
         tasks: created.tasks,
       }),
@@ -203,7 +203,7 @@ export async function createTapdWorkItemsForResult(
       trace,
     }
   } catch (error) {
-    appendActionTrace(runId, createTraceEvent("tapd_work_items_failed", "创建 TAPD 任务", "failed", toErrorMessage(error)))
+    appendActionTrace(runId, createTraceEvent("tapd_work_items", "创建 TAPD 任务", "failed", toErrorMessage(error)))
     throw normalizeActionError(error, "TAPD 需求/任务创建失败。", "请检查 TAPD API 账号、项目 ID 和网络连接。")
   }
 }
@@ -214,14 +214,16 @@ export async function sendFeishuReviewMessage(message: string, runId?: string) {
     throw new AgentActionError("ACTION_PAYLOAD_INVALID", "飞书消息内容为空。", "请先运行 PMOpsAgent 生成评审摘要。")
   }
 
+  appendActionTrace(runId, createTraceEvent("feishu_message", "发送飞书", "running", "正在发送飞书评审摘要。"))
+
   try {
     await sendFeishuTextMessage(trimmedMessage)
-    const trace = appendActionTrace(runId, createTraceEvent("feishu_message_sent", "发送飞书", "success", "飞书评审摘要已发送。"))
+    const trace = appendActionTrace(runId, createTraceEvent("feishu_message", "发送飞书", "success", "飞书评审摘要已发送。"))
     return {
       trace,
     }
   } catch (error) {
-    appendActionTrace(runId, createTraceEvent("feishu_message_failed", "发送飞书", "failed", toErrorMessage(error)))
+    appendActionTrace(runId, createTraceEvent("feishu_message", "发送飞书", "failed", toErrorMessage(error)))
     throw normalizeActionError(error, "飞书消息发送失败。", "请检查飞书自定义机器人 webhook 和网络连接。")
   }
 }
@@ -285,18 +287,9 @@ async function createTapdWorkItemsForRun(
   selectedTaskIndexes?: number[],
   tapdConfig?: TapdWorkItemsConfigInput,
 ): Promise<Extract<ExecuteAgentActionResult, { type: "create_tapd_work_items" }>> {
-  const savedRun = await readRun(runId)
+  let savedRun = await readRun(runId)
+  savedRun = await inheritConnectionsFromMemory(savedRun)
   const existingApproval = await readFeishuApprovalRecord(runId)
-
-  if (existingApproval?.tapdStoryUrl && savedRun.run.result.tapdWorkItems) {
-    return {
-      type: "create_tapd_work_items",
-      approval: existingApproval,
-      created: savedRun.run.result.tapdWorkItems,
-      savedRun,
-      trace: getTraceEvents(runId),
-    }
-  }
 
   assertApproved(existingApproval)
 
@@ -307,7 +300,11 @@ async function createTapdWorkItemsForRun(
       ...savedRun.run,
       result: {
         ...savedRun.run.result,
-        tapdWorkItems: created,
+        tapdWorkItems: {
+          story: created.story,
+          tasks: created.tasks,
+        },
+        engineeringTasks: created.updatedTasks || savedRun.run.result.engineeringTasks,
         feishuReviewMessage: appendUniqueLink(savedRun.run.result.feishuReviewMessage, "TAPD 需求", created.story.url),
       },
     },
@@ -323,7 +320,10 @@ async function createTapdWorkItemsForRun(
   return {
     type: "create_tapd_work_items",
     approval,
-    created,
+    created: {
+      story: created.story,
+      tasks: created.tasks,
+    },
     savedRun: writtenRun,
     trace,
   }
@@ -410,4 +410,141 @@ function toErrorMessage(error: unknown) {
 
   if (error instanceof Error) return error.message
   return "Agent 动作执行失败。"
+}
+
+async function inheritConnectionsFromMemory(savedRun: SavedAgentRun): Promise<SavedAgentRun> {
+  try {
+    const key = deriveProjectKey(savedRun)
+    const memory = await readProductMemoryByKey(key).catch(() => undefined)
+    if (!memory || !memory.runIds || memory.runIds.length <= 1) {
+      return savedRun
+    }
+
+    let prdDocUrlToInherit: string | undefined = undefined
+    let tapdWorkItemsToInherit: any = undefined
+    const taskMappings: Record<string, { id: string; url: string; status?: string }> = {}
+
+    const runIdsToCheck = [...memory.runIds]
+      .filter((id) => id !== savedRun.id)
+      .reverse()
+
+    for (const pastRunId of runIdsToCheck) {
+      try {
+        const pastRun = await readSavedRunById(pastRunId)
+        if (pastRun && pastRun.run && pastRun.run.result) {
+          if (!prdDocUrlToInherit && pastRun.run.result.prdDocumentUrl) {
+            prdDocUrlToInherit = pastRun.run.result.prdDocumentUrl
+          }
+          if (!tapdWorkItemsToInherit && pastRun.run.result.tapdWorkItems) {
+            tapdWorkItemsToInherit = pastRun.run.result.tapdWorkItems
+          }
+          pastRun.run.result.engineeringTasks.forEach((task) => {
+            if (task.tapdTaskId && task.tapdTaskUrl && !taskMappings[task.title]) {
+              taskMappings[task.title] = {
+                id: task.tapdTaskId,
+                url: task.tapdTaskUrl,
+                status: task.tapdTaskStatus,
+              }
+            }
+          })
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    let modified = false
+    const updatedResult = { ...savedRun.run.result }
+
+    if (prdDocUrlToInherit && !updatedResult.prdDocumentUrl) {
+      updatedResult.prdDocumentUrl = prdDocUrlToInherit
+      updatedResult.feishuReviewMessage = appendUniqueLink(updatedResult.feishuReviewMessage, "飞书 PRD", prdDocUrlToInherit)
+      modified = true
+    }
+
+    if (tapdWorkItemsToInherit && !updatedResult.tapdWorkItems) {
+      updatedResult.tapdWorkItems = tapdWorkItemsToInherit
+      updatedResult.feishuReviewMessage = appendUniqueLink(updatedResult.feishuReviewMessage, "TAPD 需求", tapdWorkItemsToInherit.story.url)
+      modified = true
+    }
+
+    const updatedTasks = updatedResult.engineeringTasks.map((task) => {
+      const match = taskMappings[task.title]
+      if (match && !task.tapdTaskId) {
+        modified = true
+        return {
+          ...task,
+          tapdTaskId: match.id,
+          tapdTaskUrl: match.url,
+          tapdTaskStatus: match.status || "未开始",
+        }
+      }
+      return task
+    })
+
+    if (modified) {
+      updatedResult.engineeringTasks = updatedTasks
+      const updatedRun = {
+        ...savedRun,
+        run: {
+          ...savedRun.run,
+          result: updatedResult,
+        },
+      }
+      return await writeSavedRun(updatedRun)
+    }
+  } catch (error) {
+    console.error("Failed to inherit connections from memory:", error)
+  }
+  return savedRun
+}
+
+export async function syncTapdStatusForRun(runId: string) {
+  const savedRun = await readRun(runId)
+  const workspaceId = process.env.TAPD_WORKSPACE_ID?.trim() || ""
+
+  const storyId = savedRun.run.result.tapdWorkItems?.story.id
+  const syncedTasks = savedRun.run.result.engineeringTasks.filter((t) => t.tapdTaskId)
+  const taskIds = syncedTasks.map((t) => t.tapdTaskId!)
+
+  if (!storyId && taskIds.length === 0) {
+    throw new AgentActionError("ACTION_PAYLOAD_INVALID", "当前会话尚未同步任何 TAPD 工单，无法同步状态。", "请先将任务同步至 TAPD。")
+  }
+
+  appendActionTrace(runId, createTraceEvent("tapd_work_items", "同步 TAPD 状态", "running", "正在从 TAPD 获取最新任务执行状态..."))
+
+  try {
+    const { getTapdWorkItemsStatus } = await import("@/lib/tapd/createTapdWorkItems")
+    const statusResult = await getTapdWorkItemsStatus(workspaceId, storyId, taskIds)
+
+    let modified = false
+    const updatedTasks = savedRun.run.result.engineeringTasks.map((task) => {
+      if (task.tapdTaskId && statusResult.taskStatuses[task.tapdTaskId]) {
+        const newStatus = statusResult.taskStatuses[task.tapdTaskId]
+        if (task.tapdTaskStatus !== newStatus) {
+          modified = true
+          return {
+            ...task,
+            tapdTaskStatus: newStatus,
+          }
+        }
+      }
+      return task
+    })
+
+    if (modified) {
+      savedRun.run.result.engineeringTasks = updatedTasks
+      await writeSavedRun(savedRun)
+    }
+
+    appendActionTrace(runId, createTraceEvent("tapd_work_items", "同步 TAPD 状态", "success", "✓ 已成功从 TAPD 拉取并同步最新任务状态。"))
+
+    return {
+      run: savedRun.run,
+      trace: getTraceEvents(runId),
+    }
+  } catch (error) {
+    appendActionTrace(runId, createTraceEvent("tapd_work_items", "同步 TAPD 状态", "failed", toErrorMessage(error)))
+    throw normalizeActionError(error, "同步 TAPD 状态失败。", "请检查 TAPD 凭证、项目 ID 和网络连接。")
+  }
 }

@@ -26,6 +26,7 @@ export class TapdError extends Error {
 export type CreatedTapdWorkItems = {
   story: CreatedTapdItem
   tasks: CreatedTapdItem[]
+  updatedTasks?: EngineeringTask[]
 }
 
 export type CreatedTapdItem = {
@@ -151,24 +152,55 @@ export async function createTapdWorkItems(
   configInput: TapdWorkItemsConfigInput = {},
 ): Promise<CreatedTapdWorkItems> {
   const config = getTapdConfig(configInput)
-  const selectedTasks = selectedTaskIndexes
-    .map((index) => result.engineeringTasks[index])
-    .filter((task): task is EngineeringTask => Boolean(task))
-
-  if (selectedTasks.length === 0) {
+  
+  if (selectedTaskIndexes.length === 0) {
     throw new TapdError("TAPD_CREATE_TASK_FAILED", "没有选择要创建的研发任务。", "请至少选择一个研发任务后再创建 TAPD 任务。")
   }
 
-  const story = await createTapdStory(config, result)
-  const tasks: CreatedTapdItem[] = []
+  // 1. Resolve Story (Incremental)
+  let story: CreatedTapdItem
+  const existingStory = result.tapdWorkItems?.story
 
-  for (const task of selectedTasks) {
-    tasks.push(await createTapdTask(config, task, story.id, result))
+  if (existingStory && existingStory.id) {
+    story = existingStory
+  } else {
+    story = await createTapdStory(config, result)
+  }
+
+  const tasks: CreatedTapdItem[] = []
+  const updatedTasks = [...result.engineeringTasks]
+
+  // 2. Loop and Sync Tasks (Incremental)
+  for (const index of selectedTaskIndexes) {
+    const task = updatedTasks[index]
+    if (!task) continue
+
+    if (task.tapdTaskId && task.tapdTaskUrl) {
+      // Task already synced, skip creating but include in results
+      tasks.push({
+        id: task.tapdTaskId,
+        title: task.title,
+        url: task.tapdTaskUrl,
+      })
+    } else {
+      // Create new task
+      const createdTask = await createTapdTask(config, task, story.id, result)
+      tasks.push(createdTask)
+
+      // Update local task properties
+      updatedTasks[index] = {
+        ...task,
+        tapdTaskId: createdTask.id,
+        tapdTaskUrl: createdTask.url,
+        tapdTaskStatus: "未开始",
+      }
+    }
   }
 
   return {
     story,
     tasks,
+    updatedTasks,
   }
 }
 
@@ -517,4 +549,95 @@ function formatTapdMessage(payload: TapdResponse<unknown>) {
 
 function normalizeBaseUrl(value: string | undefined, fallback: string) {
   return (value?.trim() || fallback).replace(/\/$/, "")
+}
+
+export type TapdStatusSyncResult = {
+  storyStatus?: string
+  taskStatuses: Record<string, string>
+}
+
+export async function getTapdWorkItemsStatus(
+  workspaceId: string,
+  storyId?: string,
+  taskIds: string[] = [],
+): Promise<TapdStatusSyncResult> {
+  const isConfigured = getTapdRuntimeConfig().configured
+  if (!isConfigured) {
+    // Fallback Mock Mode status sync
+    const mockStatuses: Record<string, string> = {}
+    const possibleStatuses = ["未开始", "进行中", "已解决", "已关闭"]
+    taskIds.forEach((id) => {
+      const hash = id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      mockStatuses[id] = possibleStatuses[hash % possibleStatuses.length]
+    })
+    return {
+      storyStatus: storyId ? "已解决" : undefined,
+      taskStatuses: mockStatuses,
+    }
+  }
+
+  const config = getTapdCredentialConfig()
+  let storyStatus: string | undefined = undefined
+  const taskStatuses: Record<string, string> = {}
+
+  // 1. Fetch Story Status
+  if (storyId) {
+    try {
+      const storyPayload = await getTapd<any>(
+        config,
+        `stories?workspace_id=${workspaceId}&id=${storyId}`,
+        "TAPD_LIST_PROJECTS_FAILED" as any,
+        "获取 TAPD 需求状态失败",
+      )
+      const storyObj = storyPayload.data?.[0]?.Story ?? storyPayload.data?.Story
+      if (storyObj) {
+        storyStatus = mapTapdStatusLabel(storyObj.status)
+      }
+    } catch (e) {
+      console.error("Failed to fetch TAPD story status:", e)
+    }
+  }
+
+  // 2. Fetch Tasks Status
+  if (taskIds.length > 0) {
+    try {
+      const idsParam = taskIds.join(",")
+      const taskPayload = await getTapd<any>(
+        config,
+        `tasks?workspace_id=${workspaceId}&id=${idsParam}`,
+        "TAPD_LIST_PROJECTS_FAILED" as any,
+        "获取 TAPD 任务状态失败",
+      )
+
+      const taskList = Array.isArray(taskPayload.data)
+        ? taskPayload.data
+        : taskPayload.data
+        ? [taskPayload.data]
+        : []
+
+      taskList.forEach((item: any) => {
+        const taskObj = item?.Task ?? item
+        if (taskObj && taskObj.id) {
+          taskStatuses[String(taskObj.id)] = mapTapdStatusLabel(taskObj.status)
+        }
+      })
+    } catch (e) {
+      console.error("Failed to fetch TAPD tasks status:", e)
+    }
+  }
+
+  return {
+    storyStatus,
+    taskStatuses,
+  }
+}
+
+function mapTapdStatusLabel(tapdStatus: string | undefined): string {
+  if (!tapdStatus) return "未开始"
+  const statusLower = tapdStatus.toLowerCase()
+  if (["open", "new", "未开始"].includes(statusLower)) return "未开始"
+  if (["in_progress", "developing", "进行中"].includes(statusLower)) return "进行中"
+  if (["resolved", "testing", "已解决"].includes(statusLower)) return "已解决"
+  if (["closed", "done", "已关闭"].includes(statusLower)) return "已关闭"
+  return tapdStatus
 }

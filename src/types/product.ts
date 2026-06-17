@@ -92,6 +92,9 @@ export type EngineeringTask = {
   acceptanceCriteria: string[]
   priority: "P0" | "P1" | "P2"
   dependsOn?: string[]
+  tapdTaskId?: string
+  tapdTaskUrl?: string
+  tapdTaskStatus?: string
 }
 
 export type RiskItem = {

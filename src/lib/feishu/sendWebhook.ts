@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 export class FeishuWebhookError extends Error {
   code: "FEISHU_WEBHOOK_MISSING" | "FEISHU_REQUEST_TIMEOUT" | "FEISHU_REQUEST_FAILED"
 
@@ -23,6 +25,8 @@ type FeishuWebhookResponse = {
 
 export async function sendFeishuTextMessage(message: string): Promise<void> {
   const webhook = process.env.FEISHU_BOT_WEBHOOK?.trim()
+  const secret = process.env.FEISHU_BOT_SECRET?.trim()
+  const normalizedMessage = normalizeFeishuWebhookText(message)
 
   if (!webhook) {
     throw new FeishuWebhookError("FEISHU_WEBHOOK_MISSING", "FEISHU_BOT_WEBHOOK 未配置。")
@@ -30,6 +34,7 @@ export async function sendFeishuTextMessage(message: string): Promise<void> {
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
+  const payload = buildFeishuTextPayload(normalizedMessage, secret)
 
   try {
     const response = await fetch(webhook, {
@@ -37,28 +42,26 @@ export async function sendFeishuTextMessage(message: string): Promise<void> {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        msg_type: "text",
-        content: {
-          text: message,
-        },
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     })
     const responseText = await response.text()
-    const payload = parseFeishuResponse(responseText)
+    const responsePayload = parseFeishuResponse(responseText)
 
     if (!response.ok) {
-      throw new FeishuWebhookError("FEISHU_REQUEST_FAILED", `飞书 webhook 请求失败，HTTP ${response.status}。`)
+      throw new FeishuWebhookError(
+        "FEISHU_REQUEST_FAILED",
+        `飞书 webhook 请求失败，HTTP ${response.status}。${formatFeishuResponseMessage(responsePayload)}`,
+      )
     }
 
-    const legacyCode = payload.StatusCode
-    const modernCode = payload.code
+    const legacyCode = responsePayload.StatusCode
+    const modernCode = responsePayload.code
 
     if ((typeof legacyCode === "number" && legacyCode !== 0) || (typeof modernCode === "number" && modernCode !== 0)) {
       throw new FeishuWebhookError(
         "FEISHU_REQUEST_FAILED",
-        payload.StatusMessage || payload.msg || "飞书 webhook 返回错误。",
+        responsePayload.StatusMessage || responsePayload.msg || `飞书 webhook 返回错误。${formatFeishuResponseMessage(responsePayload)}`,
       )
     }
   } catch (error) {
@@ -97,4 +100,51 @@ function parseFeishuResponse(responseText: string): FeishuWebhookResponse {
   } catch {
     return {}
   }
+}
+
+function buildFeishuTextPayload(message: string, secret: string | undefined) {
+  const payload: {
+    msg_type: "text"
+    content: {
+      text: string
+    }
+    timestamp?: string
+    sign?: string
+  } = {
+    msg_type: "text",
+    content: {
+      text: message,
+    },
+  }
+
+  if (!secret) return payload
+
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  payload.timestamp = timestamp
+  payload.sign = createFeishuWebhookSign(timestamp, secret)
+
+  return payload
+}
+
+function createFeishuWebhookSign(timestamp: string, secret: string) {
+  const stringToSign = `${timestamp}\n${secret}`
+  return createHmac("sha256", stringToSign).digest("base64")
+}
+
+function formatFeishuResponseMessage(payload: FeishuWebhookResponse) {
+  const message = payload.StatusMessage || payload.msg
+  const code = typeof payload.StatusCode === "number" ? payload.StatusCode : payload.code
+
+  if (typeof code === "number" && message) return `飞书错误码：${code}，返回：${message}`
+  if (typeof code === "number") return `飞书错误码：${code}。`
+  if (message) return `飞书返回：${message}`
+
+  return ""
+}
+
+function normalizeFeishuWebhookText(message: string) {
+  const trimmed = message.trim()
+  if (/PMOpsAgent/i.test(trimmed)) return trimmed
+
+  return `PMOpsAgent 评审摘要\n\n${trimmed}`
 }

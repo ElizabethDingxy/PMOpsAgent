@@ -1,28 +1,158 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+
 :root {
-  color-scheme: light;
-  background: #f6f8f7;
-  color: #172126;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: #080b11;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.07) 0px, transparent 50%),
+    radial-gradient(at 50% 0%, rgba(16, 185, 129, 0.04) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(244, 63, 94, 0.07) 0px, transparent 50%),
+    radial-gradient(at 50% 100%, rgba(15, 23, 42, 0.4) 0px, transparent 50%);
+  background-attachment: fixed;
+  color: #e2e8f0;
+  min-height: 100vh;
+  overflow-x: hidden;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
-  margin: 0;
-  min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(238, 243, 244, 0.92), rgba(246, 248, 247, 1) 36%),
-    #f6f8f7;
-  color: #172126;
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.3);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.25);
 }
 
-button,
-input,
-textarea {
-  font: inherit;
+/* Custom styles and utilities */
+.glass-panel {
+  background: rgba(18, 24, 38, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+.glass-panel-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass-panel-hover:hover {
+  background: rgba(22, 29, 45, 0.8);
+  border-color: rgba(99, 102, 241, 0.25);
+  box-shadow: 0 12px 40px -10px rgba(99, 102, 241, 0.2), 0 0 1px 1px rgba(99, 102, 241, 0.1);
+  transform: translateY(-2px);
+}
+
+/* Glowing text and effects */
+.glow-text-primary {
+  text-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+}
+.glow-text-success {
+  text-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+}
+
+.glow-border-emerald:focus-within {
+  border-color: rgba(16, 185, 129, 0.4) !important;
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.15) !important;
+}
+
+.glow-border-indigo:focus-within {
+  border-color: rgba(99, 102, 241, 0.4) !important;
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.15) !important;
+}
+
+/* Stepper connector */
+.stepper-line {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.2) 0%, rgba(99, 102, 241, 0.2) 50%, rgba(244, 63, 94, 0.2) 100%);
+}
+
+/* Interactive focus outer rings */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.5);
+  outline-offset: 2px;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.6);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite ease-in-out;
+}
+
+@keyframes pulse-glow-amber {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.6);
+  }
+}
+
+.animate-pulse-glow-amber {
+  animation: pulse-glow-amber 2s infinite ease-in-out;
+}
+
+@keyframes pulse-glow-coral {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 8px rgba(244, 63, 94, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 16px rgba(244, 63, 94, 0.6);
+  }
+}
+
+.animate-pulse-glow-coral {
+  animation: pulse-glow-coral 2s infinite ease-in-out;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer-bg {
+  background: linear-gradient(90deg, rgba(22, 27, 38, 0.6) 25%, rgba(30, 41, 59, 0.8) 50%, rgba(22, 27, 38, 0.6) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
 }

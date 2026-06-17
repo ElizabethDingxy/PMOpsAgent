@@ -65,24 +65,25 @@ export function UploadPanel({
 
   const runtimeToneClass =
     runtimeStatusTone === "ready"
-      ? "bg-pine/10 text-pine"
+      ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shadow-[inset_0_0_12px_rgba(16,185,129,0.05)] animate-pulse-glow"
       : runtimeStatusTone === "mock"
-        ? "bg-amber/10 text-slate-700"
-        : "bg-slate-100 text-slate-500"
+        ? "bg-amber-500/10 border border-amber-500/20 text-amber-400 animate-pulse-glow-amber"
+        : "bg-slate-800/50 border border-slate-700/50 text-slate-400"
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-panel">
-      <div className="flex items-center justify-between gap-3">
+    <section className="glass-panel rounded-xl p-5 border border-slate-800/80 shadow-soft">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-800/60 pb-4">
         <div>
-          <h2 className="text-base font-semibold text-ink">反馈输入</h2>
-          <p className="mt-1 text-sm text-slate-500">上传 CSV、加载示例，或读取飞书多维表格。</p>
+          <h2 className="text-md font-bold text-slate-100 tracking-tight">配置面板 / Configuration</h2>
+          <p className="mt-1 text-xs text-slate-400">设置业务指标，导入用户反馈数据并启动 AI 分析。</p>
         </div>
-        <div className="rounded-md bg-mist px-3 py-2 text-sm font-medium text-pine">
-          {feedbackCount} 条
+        <div className="shrink-0 rounded-full bg-indigo-500/10 border border-indigo-500/30 px-3 py-1 text-xs font-semibold text-indigo-400">
+          {feedbackCount} 条反馈
         </div>
       </div>
 
-      <div className="mt-5 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 transition hover:border-pine hover:bg-pine/5">
+      {/* CSV Uploader */}
+      <div className="mt-5 rounded-xl border border-dashed border-slate-800 bg-[#0e1320]/40 p-5 hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all duration-300 group">
         <input
           ref={feedbackInputRef}
           type="file"
@@ -90,105 +91,115 @@ export function UploadPanel({
           className="sr-only"
           onChange={handleFileChange}
         />
-        <div className="flex items-start gap-3">
-          <div className="rounded-md bg-white p-2 text-pine shadow-sm">
-            <FileUp size={20} aria-hidden="true" />
+        <div className="flex items-start gap-4">
+          <div className="rounded-lg bg-[#161b2a] border border-slate-800 p-2.5 text-indigo-400 shadow-md group-hover:border-indigo-500/30 group-hover:text-indigo-300 transition-all">
+            <FileUp size={18} aria-hidden="true" />
           </div>
-          <div>
-            <p className="text-sm font-medium text-ink">上传反馈 CSV</p>
-            <p className="mt-1 text-sm leading-6 text-slate-500">
-              点击此区域选择用户反馈文件。支持 content、反馈内容、用户反馈、source、created_at 等字段。
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-slate-200">导入反馈数据集</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-400">
+              选择本地 CSV 格式反馈文件。需包含 content 或反馈内容字段，支持解析 source 和时间属性。
             </p>
             <button
               type="button"
               onClick={() => feedbackInputRef.current?.click()}
-              className="mt-3 inline-flex rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-pine shadow-sm"
+              className="mt-3.5 inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 px-3.5 py-2 text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-all shadow-sm"
             >
-              选择反馈 CSV
+              浏览本地 CSV
             </button>
           </div>
         </div>
       </div>
 
       {sourceLabel ? (
-        <p className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">当前数据：{sourceLabel}</p>
+        <div className="mt-3.5 rounded-lg bg-[#0e1320]/80 border border-slate-800/80 px-3.5 py-2 text-xs text-indigo-400 flex items-center gap-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-ping"></span>
+          <span className="truncate">数据源：{sourceLabel}</span>
+        </div>
       ) : null}
 
       <FeedbackPreview feedbackItems={feedbackItems} />
 
-      <div className="mt-5 rounded-lg border border-slate-100 bg-slate-50 p-4">
-        <div className="flex items-center gap-2">
-          <BarChart3 size={18} className="text-pine" aria-hidden="true" />
-          <h3 className="text-sm font-semibold text-ink">业务数据</h3>
+      {/* Business Metrics */}
+      <div className="mt-5 rounded-xl border border-slate-800 bg-[#0e1320]/40 p-4">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-2 mb-3">
+          <BarChart3 size={16} className="text-indigo-400" aria-hidden="true" />
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Context / 业务上下文</h3>
         </div>
-        <div className="mt-3 space-y-3">
+        <div className="space-y-4">
           <label className="block">
-            <span className="text-xs font-semibold text-slate-500">当前业务目标</span>
+            <span className="text-xs font-semibold text-slate-400">核心业务目标</span>
             <input
               value={businessGoal}
               onChange={(event) => onBusinessGoalChange(event.target.value)}
-              placeholder="例如：提升新用户首周激活率"
-              className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-pine"
+              placeholder="例如：提升求职助手分析转化率"
+              className="mt-1.5 w-full rounded-lg border border-slate-850 bg-[#07090f] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-indigo-500/50 transition-all"
             />
           </label>
           <label className="block">
-            <span className="text-xs font-semibold text-slate-500">北极星指标</span>
+            <span className="text-xs font-semibold text-slate-400">北极星指标 (KPI)</span>
             <input
               value={northStarMetric}
               onChange={(event) => onNorthStarMetricChange(event.target.value)}
-              placeholder="例如：每周完成一次有效分析的用户数"
-              className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-pine"
+              placeholder="例如：每周完成并导出的团队活跃数"
+              className="mt-1.5 w-full rounded-lg border border-slate-850 bg-[#07090f] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-indigo-500/50 transition-all"
             />
           </label>
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-3">
-        <button
-          type="button"
-          onClick={onLoadSample}
-          disabled={isLoadingSample}
-          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-ink shadow-sm"
-        >
-          <Rows3 size={17} aria-hidden="true" />
-          {isLoadingSample ? "加载中" : "加载示例反馈"}
-        </button>
-        <button
-          type="button"
-          onClick={onLoadFeishuBitable}
-          disabled={!feishuBitableConfigured || isLoadingBitable}
-          title={feishuBitableConfigured ? "从飞书多维表格读取反馈" : "请先配置飞书多维表格环境变量"}
-          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-ink shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-        >
-          <Table2 size={17} aria-hidden="true" />
-          {isLoadingBitable ? "读取中" : "读取飞书表格"}
-        </button>
+      {/* Buttons */}
+      <div className="mt-5 grid grid-cols-1 gap-2.5">
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={onLoadSample}
+            disabled={isLoadingSample}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-800 bg-[#121826]/80 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:text-slate-100 hover:bg-[#182033] hover:border-slate-700 disabled:cursor-not-allowed disabled:opacity-40 transition-all"
+          >
+            <Rows3 size={15} aria-hidden="true" />
+            {isLoadingSample ? "载入中..." : "加载示例反馈"}
+          </button>
+          <button
+            type="button"
+            onClick={onLoadFeishuBitable}
+            disabled={!feishuBitableConfigured || isLoadingBitable}
+            title={feishuBitableConfigured ? "从飞书多维表格读取反馈" : "请先配置飞书多维表格环境变量"}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-800 bg-[#121826]/80 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:text-slate-100 hover:bg-[#182033] hover:border-slate-700 disabled:cursor-not-allowed disabled:opacity-40 transition-all"
+          >
+            <Table2 size={15} aria-hidden="true" />
+            {isLoadingBitable ? "同步中..." : "读取飞书表格"}
+          </button>
+        </div>
         <button
           type="button"
           onClick={onStartAnalysis}
           disabled={feedbackCount === 0 || isAnalyzing}
-          className="inline-flex items-center justify-center gap-2 rounded-md bg-pine px-4 py-2.5 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-sm font-bold text-white shadow-[0_0_20px_rgba(99,102,241,0.25)] hover:shadow-[0_0_25px_rgba(99,102,241,0.4)] transition-all duration-300 py-3 disabled:cursor-not-allowed disabled:opacity-40 disabled:from-slate-800 disabled:to-slate-900 disabled:shadow-none disabled:text-slate-500"
         >
-          <Play size={17} aria-hidden="true" />
-          {isAnalyzing ? "分析中" : "开始分析"}
+          <Play size={15} aria-hidden="true" />
+          {isAnalyzing ? "正在进行 AI 深度分析..." : "开始 AI 自动分析"}
         </button>
       </div>
 
       {error ? (
-        <div className="mt-5 rounded-lg border border-red-100 bg-red-50 p-3">
-          <div className="flex gap-2">
-            <AlertCircle className="mt-0.5 shrink-0 text-red-600" size={17} aria-hidden="true" />
-            <div>
-              <p className="text-sm font-semibold text-red-700">{error.title}</p>
-              <p className="mt-1 text-sm leading-6 text-red-700">{error.message}</p>
-              <p className="mt-1 text-sm leading-6 text-red-600">{error.fix}</p>
+        <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 p-4">
+          <div className="flex gap-3">
+            <AlertCircle className="mt-0.5 shrink-0 text-rose-400" size={16} aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-rose-300 tracking-tight">{error.title}</p>
+              <p className="mt-1 text-xs leading-relaxed text-rose-400">{error.message}</p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-400 font-mono">建议操作：{error.fix}</p>
             </div>
           </div>
         </div>
       ) : null}
 
-      <div className={`mt-5 rounded-md px-3 py-2 text-sm ${runtimeToneClass}`}>
-        {runtimeStatusLabel}
+      <div className={`mt-4 rounded-lg px-3.5 py-2.5 text-xs font-mono border flex items-center justify-between ${runtimeToneClass}`}>
+        <span className="flex items-center gap-2">
+          <span className={`h-2 w-2 rounded-full ${runtimeStatusTone === 'ready' ? 'bg-emerald-400' : runtimeStatusTone === 'mock' ? 'bg-amber-400' : 'bg-slate-500'}`}></span>
+          模型环境：{runtimeStatusLabel}
+        </span>
       </div>
     </section>
   )
@@ -197,35 +208,39 @@ export function UploadPanel({
 function FeedbackPreview({ feedbackItems }: { feedbackItems: FeedbackItem[] }) {
   if (feedbackItems.length === 0) {
     return (
-      <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-3 text-sm text-slate-500">
-        尚未读取反馈。请上传反馈 CSV 或加载示例数据。
+      <div className="mt-4 rounded-xl border border-slate-800 bg-[#0e1320]/20 px-4 py-6 text-center text-xs text-slate-500">
+        暂无待分析的反馈，请加载示例数据或上传本地 CSV 文件。
       </div>
     )
   }
 
   return (
-    <div className="mt-3 rounded-lg border border-pine/15 bg-pine/5 p-3">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-ink">已读取反馈</h3>
-        <span className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-pine">
-          {feedbackItems.length} 条
+    <div className="mt-4 rounded-xl border border-slate-800/80 bg-[#121826]/40 p-4">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-2 mb-3">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">反馈预览</h3>
+        <span className="rounded-full bg-indigo-500/10 px-2.5 py-0.5 text-xs font-semibold text-indigo-400 border border-indigo-500/20">
+          第 1-6 条
         </span>
       </div>
-      <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+      <div className="max-h-60 space-y-2.5 overflow-y-auto pr-1">
         {feedbackItems.slice(0, 6).map((item) => (
-          <article key={item.id} className="rounded-md bg-white px-3 py-2 text-sm shadow-sm">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-              <span className="font-semibold text-pine">{item.id}</span>
-              {item.userType ? <span>{item.userType}</span> : null}
-              {item.source ? <span>{item.source}</span> : null}
-              {item.createdAt ? <span>{item.createdAt}</span> : null}
+          <article key={item.id} className="rounded-lg bg-[#0d101d] border border-slate-850 p-3 hover:border-slate-800 transition-all">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/40 pb-1 mb-1.5 text-[10px] font-mono text-slate-500">
+              <span className="font-bold text-indigo-400">{item.id}</span>
+              <div className="flex gap-2">
+                {item.userType ? <span className="bg-slate-800 px-1.5 py-0.5 rounded">{item.userType}</span> : null}
+                {item.source ? <span className="bg-[#182030] px-1.5 py-0.5 rounded text-slate-400">{item.source}</span> : null}
+                {item.createdAt ? <span>{item.createdAt}</span> : null}
+              </div>
             </div>
-            <p className="mt-1 line-clamp-3 leading-6 text-slate-700">{item.content}</p>
+            <p className="text-xs leading-relaxed text-slate-300 break-all">{item.content}</p>
           </article>
         ))}
       </div>
       {feedbackItems.length > 6 ? (
-        <p className="mt-3 text-xs text-slate-500">还有 {feedbackItems.length - 6} 条反馈未展示。</p>
+        <p className="mt-2.5 text-center text-[10px] text-slate-500 font-mono">
+          ... 还有 {feedbackItems.length - 6} 条用户反馈数据已读入
+        </p>
       ) : null}
     </div>
   )

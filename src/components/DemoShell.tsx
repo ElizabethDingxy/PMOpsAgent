@@ -13,7 +13,8 @@ import { CsvParseError, parseFeedbackCsv } from "@/lib/csv/parseFeedbackCsv"
 import { MetricCsvParseError, parseMetricCsv } from "@/lib/csv/parseMetricCsv"
 import { createClientTraceEvent } from "@/lib/trace/traceTypes"
 import type { TraceEvent } from "@/types/agent"
-import type { AgentResult, AgentRun, BusinessMetric, FeedbackItem, SavedAgentRun, SavedAgentRunSummary } from "@/types/product"
+import type { AgentResult, AgentRun, BusinessMetric, EngineeringTask, FeedbackItem, SavedAgentRun, SavedAgentRunSummary } from "@/types/product"
+import { Award, BookOpen, ChevronRight, Cpu, Database, GitBranch, GitMerge, Layout, MessageSquare, Terminal } from "lucide-react"
 
 const tapdProjectConfigStorageKey = "pmops.tapdProjectConfig.v1"
 const emptyTapdProjectConfig: TapdProjectConfig = {
@@ -39,19 +40,20 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>(initialSelectedRun?.run.result.trace ?? [])
   const [uploadError, setUploadError] = useState<UploadError | null>(null)
   const [notice, setNotice] = useState<string>(
-    initialSelectedRun ? `已加载历史运行：${initialSelectedRun.run.result.productName}` : "请先上传 CSV 或加载示例反馈。",
+    initialSelectedRun ? `已成功加载历史会话记录：${initialSelectedRun.run.result.productName}` : "请在左侧面板配置数据源并启动 AI 产品分析。",
   )
   const [isLoadingSample, setIsLoadingSample] = useState(false)
   const [isLoadingBitable, setIsLoadingBitable] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isCreatingPrdDoc, setIsCreatingPrdDoc] = useState(false)
   const [isCreatingTapd, setIsCreatingTapd] = useState(false)
+  const [isSyncingTapdStatus, setIsSyncingTapdStatus] = useState(false)
   const [sourceLabel, setSourceLabel] = useState<string>(initialSelectedRun?.sourceLabel ?? "")
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null)
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>("draft_generated")
-  const [sendStatusMessage, setSendStatusMessage] = useState(initialSelectedRun ? "已加载历史草稿，请确认或编辑后再发送。" : "")
+  const [sendStatusMessage, setSendStatusMessage] = useState(initialSelectedRun ? "已加载历史草稿，请核对确认后再发送。" : "")
   const [tapdStatusMessage, setTapdStatusMessage] = useState(
-    initialSelectedRun ? "已加载历史研发任务，确认后可创建 TAPD 需求/任务。" : "",
+    initialSelectedRun ? "已加载历史研发工单，确认后可直接创建 TAPD 需求和任务。" : "",
   )
   const [selectedTapdTaskIndexes, setSelectedTapdTaskIndexes] = useState<number[]>(
     initialSelectedRun?.run.result.engineeringTasks.map((_, index) => index) ?? [],
@@ -60,6 +62,61 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   const [savedRuns, setSavedRuns] = useState<SavedAgentRunSummary[]>(initialSavedRuns)
   const [isLoadingRuns, setIsLoadingRuns] = useState(false)
   const [runHistoryError, setRunHistoryError] = useState("")
+
+  // Tab State
+  const [activeTab, setActiveTab] = useState<"insights" | "prd" | "tasks" | "sync">("insights")
+
+  // Vector DB Rebuild States
+  const [isRebuildingVectors, setIsRebuildingVectors] = useState(false)
+
+  async function handleRebuildVectors(force = false) {
+    setIsRebuildingVectors(true)
+    setNotice("正在重建向量库与产品长效知识库...")
+
+    const traceId = `rebuild_vectors_${Date.now()}`
+    const startEvent: TraceEvent = {
+      id: traceId,
+      step: "向量知识库重构",
+      status: "running",
+      message: force ? "正在清空旧索引并全新重建语义向量..." : "正在分析并增量提取历史项目特征向量...",
+      timestamp: new Date().toISOString()
+    }
+    setTraceEvents(prev => [...prev, startEvent])
+
+    try {
+      const response = await fetch("/api/memory/rebuild-vectors", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ force })
+      })
+      const data = await response.json()
+
+      if (response.ok && data.ok) {
+        setNotice(`向量库重建完成！成功提取了 ${data.successCount} 个项目的语义向量。`)
+        setTraceEvents(prev => prev.map(e => e.id === traceId ? {
+          ...e,
+          status: "success",
+          message: `✓ 重建完成：共处理 ${data.successCount} 个项目。算法：${data.engine}，模型：${data.model}`,
+          timestamp: new Date().toISOString()
+        } : e))
+      } else {
+        throw new Error(data.error?.message || "重建向量库失败。")
+      }
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : "未知网络错误"
+      setNotice(`向量库重建失败：${errMsg}`)
+      setTraceEvents(prev => prev.map(e => e.id === traceId ? {
+        ...e,
+        status: "failed",
+        message: `✗ 向量库重建失败：${errMsg}`,
+        timestamp: new Date().toISOString()
+      } : e))
+    } finally {
+      setIsRebuildingVectors(false)
+    }
+  }
 
   useEffect(() => {
     let ignore = false
@@ -83,6 +140,9 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
             tapdOwnerConfigured: payload.tapdOwnerConfigured,
             tapdIterationConfigured: payload.tapdIterationConfigured,
             model: payload.model,
+            embeddingConfigured: payload.embeddingConfigured,
+            embeddingEngine: payload.embeddingEngine,
+            embeddingModel: payload.embeddingModel,
           })
         }
       } catch {
@@ -128,7 +188,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   async function handleLoadSample() {
     setIsLoadingSample(true)
     setUploadError(null)
-    setNotice("正在读取 data/sample-feedback.csv。")
+    setNotice("正在读取示例反馈数据 (sample-feedback.csv)。")
 
     try {
       const response = await fetch("/api/sample-feedback")
@@ -148,7 +208,8 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setTapdStatusMessage("")
       setSelectedTapdTaskIndexes([])
       setSourceLabel("data/sample-feedback.csv")
-      setNotice(`已加载示例反馈：${items.length} 条。`)
+      setNotice(`示例数据加载完毕，共读取到 ${items.length} 条用户反馈。`)
+      setActiveTab("insights")
     } catch (error) {
       setFeedbackItems([])
       setAgentRun(null)
@@ -160,7 +221,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setSelectedTapdTaskIndexes([])
       setSourceLabel("")
       setUploadError(toUploadError(error))
-      setNotice("示例反馈加载失败。")
+      setNotice("示例反馈加载失败，请检查本地文件。")
     } finally {
       setIsLoadingSample(false)
     }
@@ -168,7 +229,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
 
   async function handleUploadCsv(file: File) {
     setUploadError(null)
-    setNotice(`正在解析 ${file.name}。`)
+    setNotice(`正在解析上传的文件 ${file.name}。`)
 
     try {
       const csvText = await readCsvFileText(file)
@@ -182,7 +243,8 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setTapdStatusMessage("")
       setSelectedTapdTaskIndexes([])
       setSourceLabel(file.name)
-      setNotice(`已解析 ${file.name}：${items.length} 条反馈。`)
+      setNotice(`成功解析 ${file.name}，共读入 ${items.length} 条用户反馈数据。`)
+      setActiveTab("insights")
     } catch (error) {
       setFeedbackItems([])
       setAgentRun(null)
@@ -194,7 +256,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setSelectedTapdTaskIndexes([])
       setSourceLabel("")
       setUploadError(toUploadError(error))
-      setNotice("CSV 解析失败。")
+      setNotice("本地 CSV 文件解析失败。")
     }
   }
 
@@ -230,7 +292,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       const csvText = await response.text()
       const metrics = parseMetricCsv(csvText)
       setBusinessGoal("提升 PMOpsAgent 分析到 PRD/TAPD 交付的转化率")
-      setNorthStarMetric("每周完成一次有效分析并进入评审的团队数")
+      setNorthStarMetric("每周完成一次有效 analysis 并进入评审的团队数")
       setBusinessMetrics(metrics)
       setMetricsSourceLabel("data/sample-metrics.csv")
       setNotice(`已加载示例指标：${metrics.length} 条。`)
@@ -245,7 +307,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   async function handleLoadFeishuBitable() {
     setIsLoadingBitable(true)
     setUploadError(null)
-    setNotice("正在读取飞书多维表格反馈。")
+    setNotice("正在通过 API 连接飞书多维表格读取反馈。")
 
     try {
       const response = await fetch("/api/feishu/bitable-feedback")
@@ -264,7 +326,8 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setTapdStatusMessage("")
       setSelectedTapdTaskIndexes([])
       setSourceLabel(payload.sourceLabel)
-      setNotice(`已读取飞书多维表格：${payload.feedbackItems.length} 条反馈。`)
+      setNotice(`飞书多维表格连接成功，已获取 ${payload.feedbackItems.length} 条反馈。`)
+      setActiveTab("insights")
     } catch (error) {
       setFeedbackItems([])
       setAgentRun(null)
@@ -276,7 +339,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setSelectedTapdTaskIndexes([])
       setSourceLabel("")
       setUploadError(toFeishuBitableUploadError(error))
-      setNotice("飞书多维表格读取失败。")
+      setNotice("无法从飞书多维表格读取反馈数据。")
     } finally {
       setIsLoadingBitable(false)
     }
@@ -285,9 +348,9 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   async function handleStartAnalysis() {
     if (feedbackItems.length === 0) {
       setUploadError({
-        title: "还没有用户反馈",
-        message: "当前没有可分析的 FeedbackItem。",
-        fix: "请先上传 CSV 或加载示例反馈，再开始分析。",
+        title: "数据集为空",
+        message: "当前暂无待分析的用户反馈数据 (FeedbackItem)。",
+        fix: "请先通过 CSV 上传或加载示例反馈，再启动 Agent 分析流程。",
       })
       return
     }
@@ -301,7 +364,8 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
     setSendStatusMessage("")
     setTapdStatusMessage("")
     setSelectedTapdTaskIndexes([])
-    setNotice("Agent 正在分析反馈。")
+    setNotice("AI Agent 正在进行多维度分析聚类与决策拆解，请稍候。")
+    setActiveTab("insights")
 
     try {
       const response = await fetch("/api/analyze", {
@@ -320,18 +384,87 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
           sourceLabel: sourceLabel || "手动上传 CSV",
         }),
       })
-      const payload = (await response.json()) as AnalyzeResponse
 
-      if (!payload.ok) {
-        throw new AnalyzeError(payload.error.message, payload.error.fix, payload.error.trace)
+      if (!response.body) {
+        throw new Error("API 响应体为空，无法读取分析流。")
       }
 
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder("utf-8")
+      let buffer = ""
+      let completedData: any = null
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        // Split by SSE double newline
+        const blocks = buffer.split("\n\n")
+        buffer = blocks.pop() || "" // Save the trailing partial block
+
+        for (const block of blocks) {
+          const trimmed = block.trim()
+          if (!trimmed) continue
+
+          const eventMatch = trimmed.match(/^event: (.*)$/m)
+          const dataMatch = trimmed.match(/^data: (.*)$/m)
+
+          if (eventMatch && dataMatch) {
+            const eventName = eventMatch[1].trim()
+            const eventData = JSON.parse(dataMatch[1].trim())
+
+            if (eventName === "progress") {
+              const progressEvent = eventData as TraceEvent
+              setTraceEvents((prev) => {
+                // Replace or append the trace event in real-time
+                let next = prev.filter((e) => e.id !== progressEvent.id && e.step !== progressEvent.step)
+                
+                // Clear the corresponding pending placeholders when active work begins
+                if (progressEvent.id.startsWith("strategy_agent")) {
+                  next = next.filter((e) => e.id !== "strategy_agent_pending")
+                } else if (progressEvent.id.startsWith("prd_agent")) {
+                  next = next.filter((e) => e.id !== "prd_agent_pending")
+                } else if (progressEvent.id.startsWith("delivery_agent")) {
+                  next = next.filter((e) => e.id !== "delivery_agent_pending")
+                } else if (progressEvent.id.startsWith("orchestrator")) {
+                  next = next.filter((e) => e.id !== "orchestrator_pending")
+                }
+                
+                return [...next, progressEvent]
+              })
+              // Update notice if message is present
+              if (progressEvent.message) {
+                setNotice(`[分析进度] ${progressEvent.step}：${progressEvent.message}`)
+              }
+            } else if (eventName === "completed") {
+              completedData = eventData
+            } else if (eventName === "error") {
+              throw new AnalyzeError(
+                eventData.message || "流式分析过程中发生错误。",
+                eventData.fix || "请重试或切换至 Mock 模式。",
+                eventData.trace
+              )
+            }
+          }
+        }
+      }
+
+      if (!completedData) {
+        throw new Error("流式分析未正常完成，缺少结果数据。")
+      }
+
+      const payload = completedData as {
+        result: AgentResult
+        run: AgentRun
+        savedRun: SavedAgentRun
+      }
       setAgentRun(payload.run)
       setDraftResult(payload.run.result)
       setTraceEvents(payload.run.result.trace)
       setApprovalStatus("draft_generated")
-      setSendStatusMessage("草稿已生成，请确认或编辑后再发送。")
-      setTapdStatusMessage("已生成研发任务草稿，确认后可创建 TAPD 需求/任务。")
+      setSendStatusMessage("AI 草稿生成完毕，请确认或修改后再派发。")
+      setTapdStatusMessage("已生成对应研发工单，审核确认后即可一键同步至 TAPD。")
       setSelectedTapdTaskIndexes(payload.run.result.engineeringTasks.map((_, index) => index))
       void loadRunHistory()
       setNotice(payload.run.message)
@@ -345,7 +478,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
         setTraceEvents(error.trace)
       }
       setUploadError(toAnalyzeUploadError(error))
-      setNotice("Agent 分析失败。")
+      setNotice("Agent 智能分析分析流程异常中断。")
     } finally {
       setIsAnalyzing(false)
     }
@@ -362,10 +495,10 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       if (payload.ok) {
         setSavedRuns(payload.runs)
       } else {
-        setRunHistoryError(payload.error?.message || "历史运行读取失败。")
+        setRunHistoryError(payload.error?.message || "本地运行历史同步失败。")
       }
     } catch (error) {
-      setRunHistoryError(error instanceof Error ? error.message : "历史运行读取失败。")
+      setRunHistoryError(error instanceof Error ? error.message : "本地运行历史同步失败。")
     } finally {
       setIsLoadingRuns(false)
     }
@@ -381,14 +514,14 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       }
 
       await navigator.clipboard.writeText(payload.run.run.result.feishuReviewMessage)
-      setSendStatusMessage("历史飞书摘要已复制。")
+      setSendStatusMessage("历史评审消息摘要复制成功。")
     } catch (error) {
-      setSendStatusMessage(error instanceof Error ? error.message : "复制历史摘要失败。")
+      setSendStatusMessage(error instanceof Error ? error.message : "历史摘要复制失败。")
     }
   }
 
   async function handleDeleteRun(id: string) {
-    const confirmed = window.confirm("确认删除这条本地历史运行记录吗？")
+    const confirmed = window.confirm("确认要删除本地该会话的归档记录吗？此操作无法恢复。")
 
     if (!confirmed) return
 
@@ -412,12 +545,12 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       }
 
       await loadRunHistory()
-      setNotice("历史运行已删除。")
+      setNotice("归档历史会话删除成功。")
     } catch (error) {
       setUploadError({
-        title: "历史运行删除失败",
-        message: error instanceof Error ? error.message : "无法删除该历史记录。",
-        fix: "请刷新历史列表后重试。",
+        title: "历史归档删除失败",
+        message: error instanceof Error ? error.message : "无法删除所选归档会话记录。",
+        fix: "请刷新历史列表后，重新尝试删除操作。",
       })
     }
   }
@@ -425,17 +558,17 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   async function handleSendFeishu() {
     if (!draftResult?.feishuReviewMessage || !agentRun) {
       setApprovalStatus("failed")
-      setSendStatusMessage("请先运行 Agent 生成飞书评审摘要。")
+      setSendStatusMessage("发布失败：暂无就绪的评审摘要草稿。")
       return
     }
 
-    if (approvalStatus !== "approved") {
-      setSendStatusMessage("请先点击“确认通过”，再发送到飞书。")
+    if (approvalStatus !== "approved" && approvalStatus !== "failed") {
+      setSendStatusMessage("操作拦截：请先点击下方“核对并通过”通过草稿。")
       return
     }
 
     setApprovalStatus("sending")
-    setSendStatusMessage("正在发送飞书评审摘要。")
+    setSendStatusMessage("正在向飞书群组发布评审摘要...")
     setTraceEvents(markSendTraceRunning(visibleTrace))
 
     try {
@@ -457,7 +590,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
 
       setTraceEvents(payload.trace)
       setApprovalStatus("sent")
-      setSendStatusMessage("飞书评审摘要已发送。")
+      setSendStatusMessage("✓ 飞书群评审摘要消息已成功发布！")
     } catch (error) {
       if (error instanceof SendFeishuError && error.trace?.length) {
         setTraceEvents(error.trace)
@@ -466,7 +599,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       }
 
       setApprovalStatus("failed")
-      setSendStatusMessage(error instanceof SendFeishuError ? `${error.message} ${error.fix ?? ""}`.trim() : "飞书发送失败。")
+      setSendStatusMessage(error instanceof SendFeishuError ? `${error.message} ${error.fix ?? ""}`.trim() : "同步至飞书时发生网络异常。")
     }
   }
 
@@ -474,48 +607,48 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
     const message = draftResult?.feishuReviewMessage ?? ""
 
     if (!message.trim()) {
-      setSendStatusMessage("暂无可复制的飞书摘要。")
+      setSendStatusMessage("复制失败：当前预览消息为空。")
       return
     }
 
     try {
       await navigator.clipboard.writeText(message)
-      setSendStatusMessage("飞书摘要已复制。")
+      setSendStatusMessage("✓ 评审摘要已成功复制到剪贴板！")
     } catch {
-      setSendStatusMessage("复制失败，请手动选中摘要文本复制。")
+      setSendStatusMessage("复制失败，您的浏览器可能不支持剪贴板写入 API，请手动选中复制。")
     }
   }
 
   function handleCancelSend() {
     setApprovalStatus("cancelled")
     setTraceEvents(markApprovalTrace(visibleTrace, "approval_cancelled", "已取消发送，草稿仍保留。"))
-    setSendStatusMessage("已取消发送。本次不会向飞书群发送消息，草稿仍保留。")
+    setSendStatusMessage("操作取消：当前会话已被重置为草稿状态。")
   }
 
   function handleApproveDraft() {
     if (!draftResult?.feishuReviewMessage.trim()) {
-      setSendStatusMessage("飞书摘要为空，无法确认。")
+      setSendStatusMessage("核对失败：飞书摘要为空。")
       return
     }
 
     setApprovalStatus("approved")
-    setTraceEvents(markApprovalTrace(visibleTrace, "approval_confirmed", "用户已确认飞书摘要，可以发送。"))
-    setSendStatusMessage("草稿已确认。现在可以发送到飞书。")
+    setTraceEvents(markApprovalTrace(visibleTrace, "approval_confirmed", "用户已核对并通过飞书摘要。"))
+    setSendStatusMessage("✓ 草稿已审核通过！现在可以派发飞书或同步交付 TAPD。")
   }
 
   async function handleCreatePrdDocument() {
     if (!draftResult || !agentRun) {
-      setSendStatusMessage("请先运行 Agent 生成 PRD 草稿。")
+      setSendStatusMessage("操作拦截：请先运行分析流程生成草稿。")
       return
     }
 
-    if (approvalStatus !== "approved") {
-      setSendStatusMessage("请先点击“确认通过”，再创建飞书 PRD 文档。")
+    if (approvalStatus !== "approved" && approvalStatus !== "sent" && approvalStatus !== "failed") {
+      setSendStatusMessage("操作拦截：请先点击“核对并通过”确认草稿细节。")
       return
     }
 
     setIsCreatingPrdDoc(true)
-    setSendStatusMessage("正在创建飞书 PRD 文档。")
+    setSendStatusMessage("正在与飞书文档服务器交互，生成云端 PRD...")
     setTraceEvents(markPrdDocTraceRunning(visibleTrace))
 
     try {
@@ -544,7 +677,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       })
       setTraceEvents(payload.trace)
       setApprovalStatus("approved")
-      setSendStatusMessage(payload.document.url ? "飞书 PRD 文档已创建，链接已追加到飞书摘要。" : "飞书 PRD 文档已创建。")
+      setSendStatusMessage(payload.document.url ? "✓ 飞书云 PRD 文档创建完毕，链接已动态追加至群评审摘要。" : "✓ 飞书云 PRD 文档创建成功！")
     } catch (error) {
       if (error instanceof CreatePrdDocumentError && error.trace?.length) {
         setTraceEvents(error.trace)
@@ -552,7 +685,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
         setTraceEvents(markPrdDocTraceFailed(visibleTrace, toErrorMessage(error)))
       }
 
-      setSendStatusMessage(error instanceof CreatePrdDocumentError ? `${error.message} ${error.fix ?? ""}`.trim() : "飞书 PRD 文档创建失败。")
+      setSendStatusMessage(error instanceof CreatePrdDocumentError ? `${error.message} ${error.fix ?? ""}`.trim() : "飞书文档服务通信异常，请重试。")
     } finally {
       setIsCreatingPrdDoc(false)
     }
@@ -560,22 +693,22 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
 
   async function handleCreateTapdWorkItems() {
     if (!draftResult || !agentRun) {
-      setTapdStatusMessage("请先运行 Agent 生成研发任务草稿。")
+      setTapdStatusMessage("操作拦截：请先运行分析流程生成研发工单。")
       return
     }
 
-    if (approvalStatus !== "approved") {
-      setTapdStatusMessage("请先点击“确认通过”，再创建 TAPD 需求/任务。")
+    if (approvalStatus !== "approved" && approvalStatus !== "sent" && approvalStatus !== "failed") {
+      setTapdStatusMessage("操作拦截：请先核对并通过评审摘要。")
       return
     }
 
     if (selectedTapdTaskIndexes.length === 0) {
-      setTapdStatusMessage("请至少选择一个研发任务。")
+      setTapdStatusMessage("操作拦截：请勾选至少一个工单任务。")
       return
     }
 
     setIsCreatingTapd(true)
-    setTapdStatusMessage("正在创建 TAPD 需求与任务。")
+    setTapdStatusMessage("正在建立 API 握手，同步创建 TAPD 需求和工单...")
     setTraceEvents(markTapdTraceRunning(visibleTrace))
 
     try {
@@ -602,11 +735,15 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
       setDraftResult({
         ...draftResult,
         feishuReviewMessage: nextMessage,
-        tapdWorkItems: payload.created,
+        tapdWorkItems: {
+          story: payload.created.story,
+          tasks: payload.created.tasks,
+        },
+        engineeringTasks: payload.created.updatedTasks || draftResult.engineeringTasks,
       })
       setTraceEvents(payload.trace)
       setApprovalStatus("approved")
-      setTapdStatusMessage(`已创建 1 个 TAPD 需求和 ${payload.created.tasks.length} 个 TAPD 任务，链接已追加到飞书摘要。`)
+      setTapdStatusMessage(`✓ 同步成功！已创建 1 个 TAPD 需求故事和 ${payload.created.tasks.length} 个关联任务，链接已追加至群摘要。`)
     } catch (error) {
       if (error instanceof CreateTapdWorkItemsError && error.trace?.length) {
         setTraceEvents(error.trace)
@@ -614,14 +751,107 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
         setTraceEvents(markTapdTraceFailed(visibleTrace, toErrorMessage(error)))
       }
 
-      setTapdStatusMessage(error instanceof CreateTapdWorkItemsError ? `${error.message} ${error.fix ?? ""}`.trim() : "TAPD 需求/任务创建失败。")
+      setTapdStatusMessage(error instanceof CreateTapdWorkItemsError ? `${error.message} ${error.fix ?? ""}`.trim() : "与 TAPD 服务器通信失败，请检查网络和凭证。")
     } finally {
       setIsCreatingTapd(false)
     }
   }
 
+  async function handleSyncTapdStatus() {
+    if (!agentRun) {
+      setTapdStatusMessage("操作拦截：没有处于活动状态的分析会话。")
+      return
+    }
+
+    setIsSyncingTapdStatus(true)
+    setTapdStatusMessage("正在向 TAPD 发送请求，同步最新任务状态...")
+    setTraceEvents(markTapdTraceRunning(visibleTrace))
+
+    try {
+      const response = await fetch("/api/tapd/sync-status", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          runId: agentRun.runId,
+        }),
+      })
+      const payload = await response.json()
+
+      if (!payload.ok) {
+        throw new Error(payload.error.message || "同步 TAPD 状态失败。")
+      }
+
+      setDraftResult((current) => {
+        const base = current ?? agentRun.result
+        if (!base) return null
+        return {
+          ...base,
+          engineeringTasks: payload.run.result.engineeringTasks,
+        }
+      })
+      setTraceEvents(payload.trace)
+      setTapdStatusMessage("✓ TAPD 最新任务执行状态同步成功！")
+      setNotice("TAPD 状态同步已完成。")
+    } catch (error) {
+      setTraceEvents(markTapdTraceFailed(visibleTrace, toErrorMessage(error)))
+      setTapdStatusMessage(error instanceof Error ? error.message : "拉取 TAPD 状态发生异常，请重试。")
+    } finally {
+      setIsSyncingTapdStatus(false)
+    }
+  }
+
+  function getEventOrderScore(event: TraceEvent): number {
+    const id = event.id.toLowerCase()
+    const step = event.step.toLowerCase()
+    
+    if (id.includes("feedback_loaded")) return 10
+    if (id.includes("business_context")) return 20
+    if (id.includes("mock_mode_enabled")) return 30
+    
+    if (id.includes("research_agent") || step.includes("research agent")) return 40
+    if (id.includes("strategy_agent") || step.includes("strategy agent")) return 50
+    if (id.includes("prd_agent") || step.includes("prd agent")) return 60
+    if (id.includes("delivery_agent") || step.includes("delivery agent")) return 70
+    
+    if (
+      id.includes("critic_agent") || 
+      id.includes("critic_completed") || 
+      id.includes("critic_feedback") || 
+      step.includes("critic agent") || 
+      step.includes("自我反思")
+    ) {
+      return 80
+    }
+    
+    if (id.includes("orchestrator") || step.includes("orchestrator")) return 90
+    if (id.includes("waiting_for_approval") || step.includes("等待审批")) return 100
+    
+    if (id.includes("send_feishu") || id.includes("feishu_message") || step.includes("发送飞书")) return 110
+    if (id.includes("feishu_prd_document") || step.includes("创建飞书 prd")) return 120
+    if (id.includes("tapd_work_items") || step.includes("tapd")) return 130
+    if (id.includes("rebuild_vectors") || step.includes("向量")) return 140
+    
+    return 1000
+  }
+
+  function sortTraceEvents(events: TraceEvent[]): TraceEvent[] {
+    const withIndices = events.map((event, idx) => ({ event, idx }))
+    withIndices.sort((a, b) => {
+      const scoreA = getEventOrderScore(a.event)
+      const scoreB = getEventOrderScore(b.event)
+      if (scoreA !== scoreB) {
+        return scoreA - scoreB
+      }
+      return a.idx - b.idx
+    })
+    return withIndices.map((item) => item.event)
+  }
+
   const agentResult = draftResult ?? agentRun?.result
-  const visibleTrace = traceEvents.length > 0 ? traceEvents : agentResult?.trace ?? []
+  const rawTrace = traceEvents.length > 0 ? traceEvents : agentResult?.trace ?? []
+  const visibleTrace = sortTraceEvents(rawTrace)
   const hasApprovalDraft = Boolean(draftResult && agentRun)
   const feishuMessage = draftResult?.feishuReviewMessage ?? ""
   const webhookConfigured = Boolean(runtimeConfig?.feishuWebhookConfigured)
@@ -632,151 +862,235 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   const canApproveDraft = Boolean(
     hasApprovalDraft && draftResult?.feishuReviewMessage.trim() && approvalStatus !== "sending" && approvalStatus !== "sent",
   )
-  const canCreatePrdDoc = Boolean(hasApprovalDraft && feishuDocumentConfigured && approvalStatus === "approved" && !isCreatingPrdDoc)
+  const canCreatePrdDoc = Boolean(
+    hasApprovalDraft &&
+    feishuDocumentConfigured &&
+    ["approved", "sent", "failed"].includes(approvalStatus) &&
+    !isCreatingPrdDoc
+  )
   const canCreateTapd = Boolean(
-    hasApprovalDraft && tapdConfigured && tapdWorkspaceReady && approvalStatus === "approved" && selectedTapdTaskIndexes.length > 0 && !isCreatingTapd,
+    hasApprovalDraft &&
+    tapdConfigured &&
+    tapdWorkspaceReady &&
+    ["approved", "sent", "failed"].includes(approvalStatus) &&
+    selectedTapdTaskIndexes.length > 0 &&
+    !isCreatingTapd
   )
   const canSendFeishu = Boolean(
-    hasApprovalDraft && draftResult?.feishuReviewMessage.trim() && webhookConfigured && approvalStatus === "approved",
+    hasApprovalDraft &&
+    draftResult?.feishuReviewMessage.trim() &&
+    webhookConfigured &&
+    ["approved", "failed"].includes(approvalStatus)
   )
 
   return (
-    <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="mb-6 flex flex-col gap-4 rounded-lg border border-slate-200 bg-white px-5 py-5 shadow-panel lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-pine">AI Product Manager Agent</p>
-            <h1 className="mt-2 text-2xl font-bold text-ink sm:text-3xl">PMOpsAgent</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-              从用户反馈中提炼需求主题、MVP 范围、RICE 优先级、PRD 草稿和研发任务，并在发送飞书前等待用户审批。
-            </p>
-            <p className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">{notice}</p>
-          </div>
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <Metric label="反馈" value={String(feedbackItems.length)} />
-            <Metric label="主题" value={String(agentResult?.demandClusters.length ?? 0)} />
-            <Metric label="任务" value={String(agentResult?.engineeringTasks.length ?? 0)} />
-          </div>
-        </header>
-
-        <div className="grid gap-6 xl:h-[calc(100vh-190px)] xl:min-h-[620px] xl:grid-cols-[340px_minmax(0,1fr)_420px]">
-          <div className="min-h-0 space-y-6 xl:overflow-y-auto xl:pr-1">
-            <UploadPanel
-              feedbackCount={feedbackItems.length}
-              feedbackItems={feedbackItems}
-              error={uploadError}
-              isLoadingSample={isLoadingSample}
-              isLoadingBitable={isLoadingBitable}
-              isAnalyzing={isAnalyzing}
-              sourceLabel={sourceLabel}
-              businessGoal={businessGoal}
-              northStarMetric={northStarMetric}
-              feishuBitableConfigured={Boolean(runtimeConfig?.feishuBitableConfigured)}
-              runtimeStatusLabel={getRuntimeStatusLabel(runtimeConfig, agentRun)}
-              runtimeStatusTone={getRuntimeStatusTone(runtimeConfig, agentRun)}
-              onLoadSample={handleLoadSample}
-              onLoadFeishuBitable={handleLoadFeishuBitable}
-              onUploadCsv={handleUploadCsv}
-              onBusinessGoalChange={setBusinessGoal}
-              onNorthStarMetricChange={setNorthStarMetric}
-              onStartAnalysis={handleStartAnalysis}
-            />
-            <AgentTrace trace={visibleTrace} />
-            <RunHistory
-              runs={savedRuns}
-              isLoading={isLoadingRuns}
-              errorMessage={runHistoryError}
-              activeRunId={agentRun?.runId}
-              onRefresh={loadRunHistory}
-              onCopySummary={handleCopyHistorySummary}
-              onDelete={handleDeleteRun}
-            />
-          </div>
-
-          {agentResult ? (
-            <div id="analysis-result" className="min-h-0 scroll-mt-6 space-y-5 xl:overflow-y-auto xl:pr-1">
-              {agentRun ? <ResultModeBanner agentRun={agentRun} /> : null}
-              <InsightCards
-                clusters={agentResult.demandClusters}
-                mvpScope={agentResult.mvpScope}
-                riceItems={agentResult.ricePrioritization}
-              />
+    <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8 max-w-[1600px] mx-auto transition-colors duration-300">
+      {/* 1. Header cockpit */}
+      <header className="mb-6 rounded-2xl glass-panel p-6 border border-slate-800/80 shadow-soft">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-indigo-400 font-mono text-xs uppercase tracking-wider font-semibold">
+              <Cpu size={14} className="animate-spin" />
+              <span>AI Product Operations Console</span>
             </div>
-          ) : (
-            <ResultEmptyState />
-          )}
+            <h1 className="mt-2.5 text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 via-purple-400 to-emerald-400">
+              PMOpsAgent
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-400">
+              面向大中华区敏捷研发团队的 AI 产品协理。导入用户反馈，Agent 自动完成需求聚类、MVP 划定、RICE 计算、Notion 式 PRD 构建和 TAPD/飞书交付包同步。
+            </p>
+          </div>
 
-          <div className="min-h-0 space-y-6 xl:overflow-y-auto xl:pr-1">
-            {agentResult ? (
-              <>
-                <EditablePrd
-                  prd={agentResult.prd}
-                  risks={agentResult.risks}
-                  openQuestions={agentResult.openQuestions}
-                  onChange={(prd) =>
-                    updateDraftResult({
-                      prd,
-                    })
-                  }
-                />
-                <EditableTasks
-                  tasks={agentResult.engineeringTasks}
-                  onChange={(engineeringTasks) =>
-                    updateDraftResult({
-                      engineeringTasks,
-                    })
-                  }
-                />
-                <TapdTaskPanel
-                  tasks={agentResult.engineeringTasks}
-                  selectedIndexes={selectedTapdTaskIndexes}
-                  projectConfig={tapdProjectConfig}
-                  tapdConfigured={tapdConfigured}
-                  defaultWorkspaceConfigured={tapdDefaultWorkspaceConfigured}
-                  canCreate={canCreateTapd}
-                  isCreating={isCreatingTapd}
-                  created={draftResult?.tapdWorkItems}
-                  statusMessage={tapdStatusMessage}
-                  onProjectConfigChange={setTapdProjectConfig}
-                  onToggleTask={toggleTapdTaskSelection}
-                  onSelectAll={() => setSelectedTapdTaskIndexes(agentResult.engineeringTasks.map((_, index) => index))}
-                  onClearSelection={() => setSelectedTapdTaskIndexes([])}
-                  onCreate={handleCreateTapdWorkItems}
-                />
-              </>
-            ) : (
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-panel">
-                <h2 className="text-base font-semibold text-ink">PRD 与任务草稿</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-500">
-                  加载反馈并点击“开始分析”后，这里会展示结构化 PRD、风险、开放问题和研发任务。
-                </p>
-              </section>
-            )}
-            <ApprovalPanel
-              message={feishuMessage}
-              hasDraft={hasApprovalDraft}
-              canApprove={canApproveDraft}
-              canCreatePrdDoc={canCreatePrdDoc}
-              canSend={canSendFeishu}
-              webhookConfigured={webhookConfigured}
-              feishuDocumentConfigured={feishuDocumentConfigured}
-              status={approvalStatus}
-              statusMessage={sendStatusMessage}
-              isCreatingPrdDoc={isCreatingPrdDoc}
-              prdDocumentUrl={draftResult?.prdDocumentUrl}
-              onMessageChange={(message) =>
-                updateDraftResult({
-                  feishuReviewMessage: message,
-                })
-              }
-              onApprove={handleApproveDraft}
-              onCreatePrdDoc={handleCreatePrdDocument}
-              onSend={handleSendFeishu}
-              onCopy={handleCopySummary}
-              onCancel={handleCancelSend}
-            />
+          {/* Quick Metrics slots */}
+          <div className="grid grid-cols-3 gap-4 min-w-[320px] lg:min-w-[400px]">
+            <MetricSlot label="解析反馈" value={String(feedbackItems.length)} icon={<Database size={15} className="text-indigo-400" />} />
+            <MetricSlot label="聚类主题" value={String(agentResult?.demandClusters.length ?? 0)} icon={<Award size={15} className="text-emerald-450" />} />
+            <MetricSlot label="拆解工单" value={String(agentResult?.engineeringTasks.length ?? 0)} icon={<Terminal size={15} className="text-purple-400" />} />
           </div>
         </div>
+
+        {/* Global Notice Banner */}
+        <div className="mt-5 flex flex-col gap-3 rounded-xl border border-slate-850 bg-[#0e1320]/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="min-w-0 text-xs leading-relaxed text-slate-400 flex items-center gap-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-ping"></span>
+            <span>系统日志：{notice}</span>
+          </p>
+          <span className="shrink-0 rounded-lg bg-[#121826] border border-slate-800 px-3.5 py-1 text-xs font-mono font-bold text-slate-400">
+            {agentRun?.runId ? `RUN_ID: ${agentRun.runId.slice(0, 8).toUpperCase()}` : "SYS_STATUS: WAITING"}
+          </span>
+        </div>
+      </header>
+
+      {/* 2. Main Workstation Grid */}
+      <div className="grid gap-6 xl:grid-cols-[400px_minmax(0,1fr)] items-start">
+        {/* Left Control Columns */}
+        <aside className="space-y-6 xl:sticky xl:top-6 xl:max-h-[calc(100vh-60px)] xl:overflow-y-auto pr-1">
+          <UploadPanel
+            feedbackCount={feedbackItems.length}
+            feedbackItems={feedbackItems}
+            error={uploadError}
+            isLoadingSample={isLoadingSample}
+            isLoadingBitable={isLoadingBitable}
+            isAnalyzing={isAnalyzing}
+            sourceLabel={sourceLabel}
+            businessGoal={businessGoal}
+            northStarMetric={northStarMetric}
+            feishuBitableConfigured={Boolean(runtimeConfig?.feishuBitableConfigured)}
+            runtimeStatusLabel={getRuntimeStatusLabel(runtimeConfig, agentRun)}
+            runtimeStatusTone={getRuntimeStatusTone(runtimeConfig, agentRun)}
+            onLoadSample={handleLoadSample}
+            onLoadFeishuBitable={handleLoadFeishuBitable}
+            onUploadCsv={handleUploadCsv}
+            onBusinessGoalChange={setBusinessGoal}
+            onNorthStarMetricChange={setNorthStarMetric}
+            onStartAnalysis={handleStartAnalysis}
+          />
+          <AgentTrace trace={visibleTrace} />
+          <VectorStorePanel
+            configured={Boolean(runtimeConfig?.embeddingConfigured)}
+            engine={runtimeConfig?.embeddingEngine ?? "Sparse VSM (Local)"}
+            model={runtimeConfig?.embeddingModel ?? "TF-IDF Unigram/Bigram"}
+            isRebuilding={isRebuildingVectors}
+            onRebuild={handleRebuildVectors}
+          />
+          <RunHistory
+            runs={savedRuns}
+            isLoading={isLoadingRuns}
+            errorMessage={runHistoryError}
+            activeRunId={agentRun?.runId}
+            onRefresh={loadRunHistory}
+            onCopySummary={handleCopyHistorySummary}
+            onDelete={handleDeleteRun}
+          />
+        </aside>
+
+        {/* Right Output Workspaces */}
+        <section className="space-y-6">
+          {agentResult ? (
+            <div className="space-y-6">
+              {agentRun ? <ResultModeBanner agentRun={agentRun} /> : null}
+
+              {/* Workspace Navigation Tabs */}
+              <div className="rounded-xl glass-panel p-2 border border-slate-800/80 shadow-soft flex items-center justify-between">
+                <nav className="flex space-x-1.5">
+                  <TabButton active={activeTab === "insights"} onClick={() => setActiveTab("insights")}>
+                    <Layout size={14} />
+                    <span>聚类与优先级 (Insights)</span>
+                  </TabButton>
+                  <TabButton active={activeTab === "prd"} onClick={() => setActiveTab("prd")}>
+                    <BookOpen size={14} />
+                    <span>PRD 文档预览 (PRD Draft)</span>
+                  </TabButton>
+                  <TabButton active={activeTab === "tasks"} onClick={() => setActiveTab("tasks")}>
+                    <Terminal size={14} />
+                    <span>研发任务 (Tasks)</span>
+                  </TabButton>
+                  <TabButton active={activeTab === "sync"} onClick={() => setActiveTab("sync")}>
+                    <GitMerge size={14} />
+                    <span>同步交付 (TAPD Integration)</span>
+                  </TabButton>
+                </nav>
+                <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-mono text-slate-500 bg-[#0d101a] py-1 px-3.5 border border-slate-850 rounded-lg">
+                  <span>活动面板：</span>
+                  <span className="font-bold text-indigo-400">{activeTab.toUpperCase()}</span>
+                </div>
+              </div>
+
+              {/* Tab Workspace split-screen grid */}
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_400px] items-start">
+                <div className="space-y-6">
+                  {/* Insights Tab content */}
+                  {activeTab === "insights" && (
+                    <InsightCards
+                      clusters={agentResult.demandClusters}
+                      mvpScope={agentResult.mvpScope}
+                      riceItems={agentResult.ricePrioritization}
+                    />
+                  )}
+
+                  {/* PRD Tab content */}
+                  {activeTab === "prd" && (
+                    <EditablePrd
+                      prd={agentResult.prd}
+                      risks={agentResult.risks}
+                      openQuestions={agentResult.openQuestions}
+                      onChange={(prd) =>
+                        updateDraftResult({
+                          prd,
+                        })
+                      }
+                    />
+                  )}
+
+                  {/* Tasks Tab content */}
+                  {activeTab === "tasks" && (
+                    <EditableTasks
+                      tasks={agentResult.engineeringTasks}
+                      onChange={(engineeringTasks) =>
+                        updateDraftResult({
+                          engineeringTasks,
+                        })
+                      }
+                    />
+                  )}
+
+                  {/* Sync Tab content */}
+                  {activeTab === "sync" && (
+                    <TapdTaskPanel
+                      tasks={agentResult.engineeringTasks}
+                      selectedIndexes={selectedTapdTaskIndexes}
+                      projectConfig={tapdProjectConfig}
+                      tapdConfigured={tapdConfigured}
+                      defaultWorkspaceConfigured={tapdDefaultWorkspaceConfigured}
+                      canCreate={canCreateTapd}
+                      isCreating={isCreatingTapd}
+                      created={draftResult?.tapdWorkItems}
+                      statusMessage={tapdStatusMessage}
+                      onProjectConfigChange={setTapdProjectConfig}
+                      onToggleTask={toggleTapdTaskSelection}
+                      onSelectAll={() => setSelectedTapdTaskIndexes(agentResult.engineeringTasks.map((_, index) => index))}
+                      onClearSelection={() => setSelectedTapdTaskIndexes([])}
+                      onCreate={handleCreateTapdWorkItems}
+                      isSyncingStatus={isSyncingTapdStatus}
+                      onSyncStatus={handleSyncTapdStatus}
+                    />
+                  )}
+                </div>
+
+                {/* Persistent Approval panel co-pilot */}
+                <div className="sticky top-6">
+                  <ApprovalPanel
+                    message={feishuMessage}
+                    hasDraft={hasApprovalDraft}
+                    canApprove={canApproveDraft}
+                    canCreatePrdDoc={canCreatePrdDoc}
+                    canSend={canSendFeishu}
+                    webhookConfigured={webhookConfigured}
+                    feishuDocumentConfigured={feishuDocumentConfigured}
+                    status={approvalStatus}
+                    statusMessage={sendStatusMessage}
+                    isCreatingPrdDoc={isCreatingPrdDoc}
+                    prdDocumentUrl={draftResult?.prdDocumentUrl}
+                    onMessageChange={(message) =>
+                      updateDraftResult({
+                        feishuReviewMessage: message,
+                      })
+                    }
+                    onApprove={handleApproveDraft}
+                    onCreatePrdDoc={handleCreatePrdDocument}
+                    onSend={handleSendFeishu}
+                    onCopy={handleCopySummary}
+                    onCancel={handleCancelSend}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <ResultEmptyState />
+            </div>
+          )}
+        </section>
       </div>
     </main>
   )
@@ -784,9 +1098,7 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
   function updateDraftResult(patch: Partial<AgentResult>) {
     setDraftResult((current) => {
       const base = current ?? agentRun?.result
-
-      if (!base) return current
-
+      if (!base) return null
       return {
         ...base,
         ...patch,
@@ -795,10 +1107,10 @@ export function DemoShell({ initialSavedRuns = [], initialSelectedRun }: DemoShe
     })
     if ("engineeringTasks" in patch && patch.engineeringTasks) {
       setSelectedTapdTaskIndexes(patch.engineeringTasks.map((_, index) => index))
-      setTapdStatusMessage("研发任务已修改，请重新确认后再创建 TAPD。")
+      setTapdStatusMessage("研发工单已修改，请重新核对确认后再同步 TAPD。")
     }
     setApprovalStatus("user_editing")
-    setSendStatusMessage("草稿已修改，请重新确认后再发送。")
+    setSendStatusMessage("草稿已被用户编辑修改，请重新核对确认。")
   }
 
   function toggleTapdTaskSelection(index: number) {
@@ -823,6 +1135,29 @@ type AnalyzeResponse =
       }
     }
 
+
+type TabButtonProps = {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}
+
+function TabButton({ active, onClick, children }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold tracking-tight transition-all duration-200 ${
+        active
+          ? "bg-[#182030] text-indigo-400 border border-slate-800 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]"
+          : "text-slate-400 hover:text-slate-200 hover:bg-[#121826]/40 border border-transparent"
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 type RuntimeConfig = {
   deepseekConfigured: boolean
   feishuWebhookConfigured: boolean
@@ -837,6 +1172,9 @@ type RuntimeConfig = {
   tapdOwnerConfigured?: boolean
   tapdIterationConfigured?: boolean
   model: string
+  embeddingConfigured?: boolean
+  embeddingEngine?: string
+  embeddingModel?: string
 }
 
 type RuntimeConfigResponse =
@@ -855,6 +1193,9 @@ type RuntimeConfigResponse =
       tapdOwnerConfigured?: boolean
       tapdIterationConfigured?: boolean
       model: string
+      embeddingConfigured?: boolean
+      embeddingEngine?: string
+      embeddingModel?: string
     }
 
 type FeishuBitableFeedbackResponse =
@@ -978,6 +1319,7 @@ type CreateTapdWorkItemsResponse =
           title: string
           url: string
         }>
+        updatedTasks?: EngineeringTask[]
       }
       trace: TraceEvent[]
     }
@@ -1031,14 +1373,21 @@ class CreateTapdWorkItemsError extends Error {
 
 function ResultModeBanner({ agentRun }: { agentRun: AgentRun }) {
   return (
-    <section className="rounded-lg border border-amber/20 bg-amber/10 p-4">
+    <section className="rounded-xl border border-slate-800 bg-[#121826]/40 p-5 shadow-soft">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-ink">{agentRun.isMock ? "Mock 分析结果" : "LLM 分析结果"}</p>
-          <p className="mt-1 text-sm leading-6 text-slate-600">{agentRun.message}</p>
+        <div className="flex items-center gap-3">
+          <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></div>
+          <div>
+            <p className="text-sm font-bold text-slate-200 tracking-tight">{agentRun.isMock ? "会话模式：演示 Sandbox (Mock)" : "会话模式：大模型连接 (LLM)"}</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-400">{agentRun.message}</p>
+          </div>
         </div>
-        <span className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
-          mode: {agentRun.mode}
+        <span className={`rounded-lg border px-3 py-1.5 text-xs font-mono font-bold ${
+          agentRun.isMock 
+            ? "bg-amber-500/10 border-amber-500/20 text-amber-400" 
+            : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+        }`}>
+          MODE: {agentRun.mode.toUpperCase()}
         </span>
       </div>
     </section>
@@ -1047,15 +1396,21 @@ function ResultModeBanner({ agentRun }: { agentRun: AgentRun }) {
 
 function ResultEmptyState() {
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-panel">
-      <h2 className="text-base font-semibold text-ink">结果预览</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-500">
-        当前还没有 Agent 结果。请先读取至少 3 条反馈，然后点击“开始分析”。
+    <section className="glass-panel rounded-2xl p-8 border border-slate-800/80 shadow-soft text-center max-w-3xl mx-auto mt-12 py-16">
+      <div className="mx-auto h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/10 border border-indigo-500/35 flex text-indigo-400 mb-6 shadow-[0_0_20px_rgba(99,102,241,0.15)] animate-pulse">
+        <Layout size={32} />
+      </div>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 font-mono block">Workplace Panel</span>
+      <h2 className="mt-3 text-xl font-extrabold text-slate-100 tracking-tight">等待 AI 产品分析结果</h2>
+      <p className="mt-2.5 max-w-xl mx-auto text-xs leading-relaxed text-slate-400">
+        载入数据集并点击“开始 AI 自动分析”后，AI 智能协同引擎将全面解析需求反馈，在此区域以步骤式卡片形式呈现聚类主题、划定 MVP 范畴、推演 RICE 决策、以及一键生成 PRD 与研发任务。
       </p>
-      <div className="mt-5 grid gap-3">
-        {["需求主题", "MVP 范围", "RICE 优先级"].map((item) => (
-          <div key={item} className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-500">
-            {item} 将在分析完成后显示。
+      
+      <div className="mt-8 grid gap-4 sm:grid-cols-3">
+        {["1. 聚类分析主题", "2. 生成 PRD 草稿", "3. 拆解研发工单"].map((item, index) => (
+          <div key={item} className="rounded-xl border border-slate-850 bg-[#121826]/20 px-4 py-4 text-xs text-slate-500 flex flex-col justify-center items-center">
+            <span className="text-slate-600 font-bold mb-1 font-mono">STEP_0{index+1}</span>
+            <span className="text-slate-450 font-semibold">{item}</span>
           </div>
         ))}
       </div>
@@ -1063,11 +1418,89 @@ function ResultEmptyState() {
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function VectorStorePanel({
+  configured,
+  engine,
+  model,
+  isRebuilding,
+  onRebuild,
+}: {
+  configured: boolean
+  engine: string
+  model: string
+  isRebuilding: boolean
+  onRebuild: (force?: boolean) => void
+}) {
   return (
-    <div className="rounded-lg bg-slate-50 px-4 py-3">
-      <p className="text-xl font-bold text-ink">{value}</p>
-      <p className="mt-1 text-xs font-medium text-slate-500">{label}</p>
+    <div className="rounded-2xl glass-panel p-5 border border-slate-800/80 shadow-soft bg-[#0c101b]/70 relative overflow-hidden group">
+      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
+        <Database size={50} className="text-indigo-400" />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Database size={16} className={isRebuilding ? "text-indigo-400 animate-pulse" : "text-indigo-400"} />
+        <h3 className="text-sm font-bold tracking-wide text-slate-200">
+          向量长效知识库 (Vector DB)
+        </h3>
+      </div>
+
+      <p className="mt-2 text-xs leading-relaxed text-slate-400">
+        已升级语义相似度检索，支持长效记忆追问。增量写入伴生向量，无缝兼容飞书/网页端。
+      </p>
+
+      <div className="mt-4 rounded-xl border border-slate-850 bg-[#121726]/40 px-3.5 py-2.5 space-y-2">
+        <div className="flex justify-between items-center text-[11px]">
+          <span className="text-slate-500 font-medium">引擎状态</span>
+          <span className="inline-flex items-center gap-1 font-semibold text-emerald-450">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            活动中
+          </span>
+        </div>
+        <div className="flex justify-between items-center text-[11px]">
+          <span className="text-slate-500 font-medium">相似度算法</span>
+          <span className="font-mono text-slate-300 font-semibold">{engine}</span>
+        </div>
+        <div className="flex justify-between items-center text-[11px]">
+          <span className="text-slate-500 font-medium">基础特征模型</span>
+          <span className="font-mono text-indigo-300 font-semibold">{model}</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-2">
+        <button
+          onClick={() => onRebuild(false)}
+          disabled={isRebuilding}
+          className="flex-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-850 py-2 text-xs font-bold text-white transition duration-205 shadow-soft disabled:text-slate-500 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+        >
+          {isRebuilding ? "重建中..." : "增量重建向量库"}
+        </button>
+        <button
+          onClick={() => {
+            if (confirm("确定要清空全部现有向量索引并重新分析重建吗？")) {
+              onRebuild(true)
+            }
+          }}
+          disabled={isRebuilding}
+          title="完全清空向量索引目录并重构"
+          className="px-3 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/50 hover:bg-slate-900 text-xs font-bold text-slate-400 hover:text-slate-200 transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          全新重构
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function MetricSlot({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-slate-850 bg-[#0e1320]/40 px-4 py-3 flex items-center justify-between hover:border-slate-800 transition-all">
+      <div>
+        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{label}</p>
+        <p className="text-lg font-bold text-slate-200 mt-1.5 font-mono">{value}</p>
+      </div>
+      <div className="rounded-lg bg-slate-900 border border-slate-800 p-2 shrink-0">
+        {icon}
+      </div>
     </div>
   )
 }
@@ -1075,7 +1508,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 function toUploadError(error: unknown): UploadError {
   if (error instanceof CsvParseError) {
     return {
-      title: "CSV 解析失败",
+      title: "CSV 数据解析失败",
       message: error.message,
       fix: error.fix,
     }
@@ -1083,16 +1516,16 @@ function toUploadError(error: unknown): UploadError {
 
   if (error instanceof Error) {
     return {
-      title: "读取反馈失败",
+      title: "数据读入失败",
       message: error.message,
-      fix: "请确认文件存在、格式为 CSV，并稍后重试。",
+      fix: "请检查 CSV 文件编码格式 (支持 UTF-8 与 GB18030) 与字段包含项后重试。",
     }
   }
 
   return {
-    title: "读取反馈失败",
-    message: "发生未知错误。",
-    fix: "请重新上传 CSV，或使用示例反馈继续演示。",
+    title: "数据读入失败",
+    message: "内部发生未知解析错误。",
+    fix: "请检查本地 CSV 文件的行格式，或使用“加载示例反馈”进行演示。",
   }
 }
 
@@ -1118,7 +1551,7 @@ async function readCsvFileText(file: File) {
 function toMetricUploadError(error: unknown): UploadError {
   if (error instanceof MetricCsvParseError) {
     return {
-      title: "指标 CSV 解析失败",
+      title: "指标数据解析失败",
       message: error.message,
       fix: error.fix,
     }
@@ -1126,64 +1559,64 @@ function toMetricUploadError(error: unknown): UploadError {
 
   if (error instanceof Error) {
     return {
-      title: "读取指标失败",
+      title: "读取业务指标失败",
       message: error.message,
-      fix: "请确认文件存在、格式为 CSV，并包含 metric,value 表头。",
+      fix: "请确保文件符合格式且包含 metric 和 value 表头参数项。",
     }
   }
 
   return {
-    title: "读取指标失败",
-    message: "发生未知错误。",
-    fix: "请重新上传指标 CSV，或先不填写业务指标继续分析。",
+    title: "读取业务指标失败",
+    message: "指标数据校验异常。",
+    fix: "请重新核实指标 CSV，或者留空暂不填写继续执行分析。",
   }
 }
 
 function toAnalyzeUploadError(error: unknown): UploadError {
   if (error instanceof AnalyzeError) {
     return {
-      title: "Agent 分析失败",
+      title: "Agent 分析异常",
       message: error.message,
-      fix: error.fix || "请稍后重试；如果没有配置 API Key，系统会自动进入 Mock 模式。",
+      fix: error.fix || "请检查网络状况。如果本地未配置 DeepSeek 密钥，系统将自动降级使用 Mock 模式演示。",
     }
   }
 
   if (error instanceof Error) {
     return {
-      title: "Agent 分析失败",
+      title: "Agent 分析异常",
       message: error.message,
-      fix: "请检查本地服务是否运行，或稍后重试。",
+      fix: "请核对 API 服务端端口状态或稍后重试。",
     }
   }
 
   return {
-    title: "Agent 分析失败",
-    message: "发生未知错误。",
-    fix: "请重新运行分析，或检查服务端日志。",
+    title: "Agent 分析异常",
+    message: "服务端接口响应失败。",
+    fix: "请检查服务器后台报错日志或网络连接。",
   }
 }
 
 function toFeishuBitableUploadError(error: unknown): UploadError {
   if (error instanceof FeishuBitableReadError) {
     return {
-      title: "飞书多维表格读取失败",
+      title: "飞书多维表格连接失败",
       message: error.message,
-      fix: error.fix || "请检查飞书应用配置、表格授权和字段名。",
+      fix: error.fix || "请确保飞书后台的 App ID 权限已开通，并已将本表格的阅读权授权给对应机器人账户。",
     }
   }
 
   if (error instanceof Error) {
     return {
-      title: "飞书多维表格读取失败",
+      title: "飞书多维表格读取异常",
       message: error.message,
-      fix: "请检查本地服务是否运行，或稍后重试。",
+      fix: "连接网络可能不稳定，请稍后再次尝试拉取。",
     }
   }
 
   return {
-    title: "飞书多维表格读取失败",
-    message: "发生未知错误。",
-    fix: "请检查 .env.local 中的飞书多维表格配置。",
+    title: "飞书多维表格连接失败",
+    message: "内部认证协议建立失败。",
+    fix: "请核对本地 .env.local 中的飞书多维表格环境变量设置。",
   }
 }
 
@@ -1198,22 +1631,22 @@ function compactTapdProjectConfig(config: TapdProjectConfig) {
 
 function getRuntimeStatusLabel(runtimeConfig: RuntimeConfig | null, agentRun: AgentRun | null) {
   if (agentRun?.isMock) {
-    return "当前为 Mock 模式：结果用于演示界面流程，不代表真实模型分析。"
+    return "沙盒环境 (MOCK)"
   }
 
   if (agentRun && !agentRun.isMock) {
-    return `当前为 LLM 模式：已使用 ${runtimeConfig?.model ?? "DeepSeek"} 生成真实分析结果。`
+    return `大模型服务 (${runtimeConfig?.model ?? "DeepSeek"})`
   }
 
   if (!runtimeConfig) {
-    return "正在检查服务端环境配置。"
+    return "正在检测服务端环境..."
   }
 
   if (runtimeConfig.deepseekConfigured) {
-    return `DeepSeek API Key 已被服务端识别，点击“开始分析”将调用 ${runtimeConfig.model}。`
+    return `大模型服务已就绪 (${runtimeConfig.model})`
   }
 
-  return "DeepSeek API Key 未被当前服务端进程识别；点击“开始分析”会进入 Mock 模式。"
+  return "检测到 DeepSeek API 未配置，执行分析将自动进入 Mock 沙盒模式。"
 }
 
 function getRuntimeStatusTone(runtimeConfig: RuntimeConfig | null, agentRun: AgentRun | null): "ready" | "mock" | "unknown" {
@@ -1237,56 +1670,56 @@ function createAnalyzingTrace(feedbackCount: number): TraceEvent[] {
 }
 
 function markSendTraceRunning(trace: TraceEvent[]): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "send_feishu")
+  const nextTrace = trace.filter((event) => event.id !== "feishu_message" && event.id !== "send_feishu")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("send_feishu", "发送飞书", "running", "用户已确认，正在发送飞书评审摘要。"),
+    createClientTraceEvent("feishu_message", "发送飞书", "running", "用户已确认，正在发送飞书评审摘要。"),
   ]
 }
 
 function markSendTraceFailed(trace: TraceEvent[], message: string): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "send_feishu")
+  const nextTrace = trace.filter((event) => event.id !== "feishu_message" && event.id !== "send_feishu")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("feishu_message_failed", "发送飞书", "failed", message),
+    createClientTraceEvent("feishu_message", "发送飞书", "failed", message),
   ]
 }
 
 function markPrdDocTraceRunning(trace: TraceEvent[]): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "feishu_prd_document_creating")
+  const nextTrace = trace.filter((event) => event.id !== "feishu_prd_document")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("feishu_prd_document_creating", "创建飞书 PRD", "running", "正在创建飞书 PRD 文档。"),
+    createClientTraceEvent("feishu_prd_document", "创建飞书 PRD", "running", "正在创建飞书 PRD 文档。"),
   ]
 }
 
 function markPrdDocTraceFailed(trace: TraceEvent[], message: string): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "feishu_prd_document_creating")
+  const nextTrace = trace.filter((event) => event.id !== "feishu_prd_document")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("feishu_prd_document_failed", "创建飞书 PRD", "failed", message),
+    createClientTraceEvent("feishu_prd_document", "创建飞书 PRD", "failed", message),
   ]
 }
 
 function markTapdTraceRunning(trace: TraceEvent[]): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "tapd_work_items_creating")
+  const nextTrace = trace.filter((event) => event.id !== "tapd_work_items")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("tapd_work_items_creating", "创建 TAPD 任务", "running", "正在创建 TAPD 需求与任务。"),
+    createClientTraceEvent("tapd_work_items", "创建 TAPD 任务", "running", "正在创建 TAPD 需求与任务。"),
   ]
 }
 
 function markTapdTraceFailed(trace: TraceEvent[], message: string): TraceEvent[] {
-  const nextTrace = trace.filter((event) => event.id !== "tapd_work_items_creating")
+  const nextTrace = trace.filter((event) => event.id !== "tapd_work_items")
 
   return [
     ...nextTrace,
-    createClientTraceEvent("tapd_work_items_failed", "创建 TAPD 任务", "failed", message),
+    createClientTraceEvent("tapd_work_items", "创建 TAPD 任务", "failed", message),
   ]
 }
 

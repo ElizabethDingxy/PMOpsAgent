@@ -3,6 +3,7 @@ import type {
   PrdAgentOutput,
   ResearchAgentOutput,
   StrategyAgentOutput,
+  CriticAgentOutput,
 } from "@/lib/agent/multiAgentTypes"
 import type {
   AgentResult,
@@ -417,3 +418,55 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
   return value as Record<string, unknown>
 }
+
+export function parseCriticAgentJson(jsonText: string): CriticAgentOutput {
+  const parsed = parseJsonObject(jsonText)
+  return assertCriticAgentOutput(parsed)
+}
+
+export function assertCriticAgentOutput(value: unknown): CriticAgentOutput {
+  const issues = validateCriticAgentOutput(value)
+
+  if (issues.length > 0) {
+    throw new AgentResultValidationError(issues)
+  }
+
+  return value as CriticAgentOutput
+}
+
+export function validateCriticAgentOutput(value: unknown): string[] {
+  const issues: string[] = []
+  const result = asRecord(value)
+
+  if (!result) {
+    return ["Critic Agent 输出必须是对象"]
+  }
+
+  if (typeof result.passed !== "boolean") {
+    issues.push("passed 必须是布尔值")
+  }
+  if (result.feedback !== undefined && typeof result.feedback !== "string") {
+    issues.push("feedback 必须是字符串")
+  }
+
+  const checks = asRecord(result.checks)
+  if (!checks) {
+    issues.push("checks 必须是对象")
+  } else {
+    if (typeof checks.mustHaveCovered !== "boolean") {
+      issues.push("checks.mustHaveCovered 必须是布尔值")
+    }
+    if (typeof checks.outOfScopeExcluded !== "boolean") {
+      issues.push("checks.outOfScopeExcluded 必须是布尔值")
+    }
+    if (typeof checks.dependenciesLogical !== "boolean") {
+      issues.push("checks.dependenciesLogical 必须是布尔值")
+    }
+    if (typeof checks.risksAddressed !== "boolean") {
+      issues.push("checks.risksAddressed 必须是布尔值")
+    }
+  }
+
+  return issues
+}
+

@@ -9,8 +9,17 @@ export function createTraceRun(runId = crypto.randomUUID()): string {
 
 export function appendTraceEvent(runId: string, event: TraceEvent) {
   const events = traceRuns.get(runId) ?? []
-  events.push(event)
-  traceRuns.set(runId, events)
+  
+  // Filter out any matching logical steps to avoid duplicate elements in the timeline
+  let filteredEvents = events;
+  if (event.id === "feishu_message") {
+    filteredEvents = events.filter((e) => e.id !== "send_feishu" && e.id !== "feishu_message")
+  } else {
+    filteredEvents = events.filter((e) => e.id !== event.id)
+  }
+  
+  filteredEvents.push(event)
+  traceRuns.set(runId, filteredEvents)
   return event
 }
 

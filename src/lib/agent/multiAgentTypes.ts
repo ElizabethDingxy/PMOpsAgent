@@ -35,3 +35,15 @@ export type MultiAgentContext = {
   prd: PrdAgentOutput
   delivery: DeliveryAgentOutput
 }
+
+export type CriticAgentOutput = {
+  passed: boolean
+  feedback?: string
+  checks: {
+    mustHaveCovered: boolean
+    outOfScopeExcluded: boolean
+    dependenciesLogical: boolean
+    risksAddressed: boolean
+  }
+}
+

@@ -6,6 +6,7 @@ import {
   buildResearchAgentMessages,
   buildStrategyAgentMessages,
   multiAgentExpectedShapes,
+  buildCriticAgentMessages,
 } from "@/lib/agent/prompts"
 import {
   AgentResultValidationError,
@@ -14,6 +15,7 @@ import {
   parsePrdAgentJson,
   parseResearchAgentJson,
   parseStrategyAgentJson,
+  parseCriticAgentJson,
 } from "@/lib/agent/schemas"
 import type {
   DeliveryAgentOutput,
@@ -21,6 +23,7 @@ import type {
   PrdAgentOutput,
   ResearchAgentOutput,
   StrategyAgentOutput,
+  CriticAgentOutput,
 } from "@/lib/agent/multiAgentTypes"
 import { createDeepSeekChatCompletion, DeepSeekClientError, type ChatMessage } from "@/lib/llm/deepseekClient"
 import { createTraceEvent } from "@/lib/trace/traceTypes"
@@ -33,6 +36,7 @@ export type RunAgentInput = {
   productHint?: string
   businessContext?: BusinessContext
   forceMock?: boolean
+  onProgress?: (event: TraceEvent) => void
 }
 
 export class AgentRunError extends Error {
@@ -63,7 +67,7 @@ export class AgentRunError extends Error {
   }
 }
 
-export async function runAgent({ feedbackItems, productHint, businessContext, forceMock = false }: RunAgentInput): Promise<AgentRun> {
+export async function runAgent({ feedbackItems, productHint, businessContext, forceMock = false, onProgress }: RunAgentInput): Promise<AgentRun> {
   const runId = createTraceRun()
   const trace: TraceEvent[] = []
 
@@ -74,18 +78,51 @@ export async function runAgent({ feedbackItems, productHint, businessContext, fo
 
   if (forceMock || !process.env.DEEPSEEK_API_KEY?.trim()) {
     const mockRun = createMockAgentRun()
-    const mockTrace = [
-      ...trace,
-      createTraceEvent("mock_mode_enabled", "启用 Mock", "success", "DEEPSEEK_API_KEY 未配置或用户选择 Mock，已使用示例结果。"),
-      createTraceEvent("research_agent_completed", "Research Agent", "success", "Mock 需求洞察已生成。"),
-      createTraceEvent("strategy_agent_completed", "Strategy Agent", "success", "Mock MVP 范围与 RICE 优先级已生成。"),
-      createTraceEvent("prd_agent_completed", "PRD Agent", "success", "Mock PRD 草稿已生成。"),
-      createTraceEvent("delivery_agent_completed", "Delivery Agent", "success", "Mock 研发任务草稿与飞书摘要已生成。"),
-      createTraceEvent("orchestrator_completed", "Orchestrator", "success", "Mock 多 Agent 结果已汇总并校验。"),
-      createTraceEvent("business_context_applied", "业务数据", "success", formatBusinessContextTraceMessage(businessContext)),
-      createTraceEvent("waiting_for_approval", "等待审批", "waiting_approval", "飞书评审摘要已准备好，等待用户确认发送。"),
-      createTraceEvent("send_feishu", "发送飞书", "pending", "用户点击确认后才会发送飞书。"),
-    ]
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    
+    // We stream mock events sequentially to simulate real steps
+    const mockTrace: TraceEvent[] = [...trace]
+    
+    const fireMockProgress = async (
+      id: string,
+      step: string,
+      status: "pending" | "running" | "success" | "failed" | "waiting_approval",
+      message: string
+    ) => {
+      const event = createTraceEvent(id, step, status, message)
+      const existingIndex = mockTrace.findIndex(item => item.id === id || item.step === step)
+      if (existingIndex !== -1) {
+        mockTrace[existingIndex] = event
+      } else {
+        mockTrace.push(event)
+      }
+      replaceTraceEvents(runId, mockTrace)
+      onProgress?.(event)
+      await delay(800)
+    }
+
+    await fireMockProgress("mock_mode_enabled", "启用 Mock", "success", "DEEPSEEK_API_KEY 未配置或用户选择 Mock，已使用示例结果。")
+    if (hasBusinessContext(businessContext)) {
+      await fireMockProgress("business_context_applied", "业务数据", "success", formatBusinessContextTraceMessage(businessContext))
+    }
+    await fireMockProgress("research_agent", "Research Agent", "running", "正在聚类用户反馈并提炼需求洞察。")
+    await fireMockProgress("research_agent", "Research Agent", "success", "Mock 需求洞察已生成。")
+    await fireMockProgress("strategy_agent", "Strategy Agent", "running", "正在判断 MVP 范围并计算 RICE 优先级。")
+    await fireMockProgress("strategy_agent", "Strategy Agent", "success", "Mock MVP 范围与 RICE 优先级已生成。")
+    await fireMockProgress("prd_agent", "PRD Agent", "running", "正在把需求洞察和 MVP 范围写成 PRD 草稿。")
+    await fireMockProgress("prd_agent", "PRD Agent", "success", "Mock PRD 草稿已生成。")
+    await fireMockProgress("delivery_agent", "Delivery Agent", "running", "正在拆解研发任务并生成飞书评审摘要。")
+    await fireMockProgress("delivery_agent", "Delivery Agent", "success", "Mock 研发任务草稿与飞书摘要已生成。")
+    await fireMockProgress("critic_agent", "Critic Agent 自我反思", "success", "✓ 自我反思审计完全通过！流程进入等待人工审批阶段。")
+    
+    const orchestratorEvent = createTraceEvent("orchestrator_completed", "Orchestrator", "success", "Mock 多 Agent 结果已汇总并校验。")
+    mockTrace.push(orchestratorEvent)
+    onProgress?.(orchestratorEvent)
+
+    const approvalEvent = createTraceEvent("waiting_for_approval", "等待审批", "waiting_approval", "飞书评审摘要已准备好，等待用户确认发送。")
+    mockTrace.push(approvalEvent)
+    onProgress?.(approvalEvent)
+
     replaceTraceEvents(runId, mockTrace)
 
     return {
@@ -106,6 +143,7 @@ export async function runAgent({ feedbackItems, productHint, businessContext, fo
       businessContext,
       trace,
       runId,
+      onProgress,
     })
 
     return {
@@ -159,6 +197,7 @@ type RunMultiAgentPipelineInput = {
   businessContext?: BusinessContext
   trace: TraceEvent[]
   runId: string
+  onProgress?: (event: TraceEvent) => void
 }
 
 async function runMultiAgentPipeline({
@@ -167,16 +206,20 @@ async function runMultiAgentPipeline({
   businessContext,
   trace,
   runId,
+  onProgress,
 }: RunMultiAgentPipelineInput): Promise<AgentResult> {
   if (hasBusinessContext(businessContext)) {
-    replaceTraceEvent(trace, createTraceEvent("business_context_applied", "业务数据", "success", formatBusinessContextTraceMessage(businessContext), {
+    const event = createTraceEvent("business_context_applied", "业务数据", "success", formatBusinessContextTraceMessage(businessContext), {
       businessGoalConfigured: Boolean(businessContext?.businessGoal?.trim()),
       northStarMetricConfigured: Boolean(businessContext?.northStarMetric?.trim()),
       metricCount: businessContext?.metrics?.length ?? 0,
-    }))
+    })
+    replaceTraceEvent(trace, event)
     replaceTraceEvents(runId, trace)
+    onProgress?.(event)
   }
 
+  // 1. Run Research Agent
   const research = await runJsonAgent<ResearchAgentOutput>({
     agentName: "Research Agent",
     traceId: "research_agent",
@@ -190,8 +233,10 @@ async function runMultiAgentPipeline({
     fallbackTimeoutMs: 75_000,
     trace,
     runId,
+    onProgress,
   })
 
+  // 2. Run Strategy Agent
   const strategy = await runJsonAgent<StrategyAgentOutput>({
     agentName: "Strategy Agent",
     traceId: "strategy_agent",
@@ -205,52 +250,125 @@ async function runMultiAgentPipeline({
     fallbackTimeoutMs: 75_000,
     trace,
     runId,
+    onProgress,
   })
 
-  const prd = await runJsonAgent<PrdAgentOutput>({
-    agentName: "PRD Agent",
-    traceId: "prd_agent",
-    step: "PRD Agent",
-    runningMessage: "正在把需求洞察和 MVP 范围写成 PRD 草稿。",
-    successMessage: (output) => `PRD 草稿《${output.prd.title}》已生成。`,
-    messages: buildPrdAgentMessages({ research, strategy }, businessContext),
-    parser: parsePrdAgentJson,
-    expectedShape: multiAgentExpectedShapes.prd,
-    timeoutEnvName: "DEEPSEEK_PRD_TIMEOUT_MS",
-    fallbackTimeoutMs: 75_000,
-    trace,
-    runId,
-  })
+  // 3. Self-Reflection Loop for PRD & Delivery Agents
+  let prd: PrdAgentOutput | null = null
+  let delivery: DeliveryAgentOutput | null = null
+  let criticFeedback: string | undefined = undefined
+  const maxAttempts = 3
 
-  const delivery = await runJsonAgent<DeliveryAgentOutput>({
-    agentName: "Delivery Agent",
-    traceId: "delivery_agent",
-    step: "Delivery Agent",
-    runningMessage: "正在拆解研发任务并生成飞书评审摘要。",
-    successMessage: (output) => `已拆解 ${output.engineeringTasks.length} 条研发任务草稿。`,
-    messages: buildDeliveryAgentMessages({ research, strategy, prd }, businessContext),
-    parser: parseDeliveryAgentJson,
-    expectedShape: multiAgentExpectedShapes.delivery,
-    timeoutEnvName: "DEEPSEEK_DELIVERY_TIMEOUT_MS",
-    fallbackTimeoutMs: 75_000,
-    trace,
-    runId,
-  })
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // 3.1 Run PRD Agent
+    prd = await runJsonAgent<PrdAgentOutput>({
+      agentName: "PRD Agent",
+      traceId: "prd_agent",
+      step: `PRD Agent (第 ${attempt} 次尝试)`,
+      runningMessage: attempt > 1 
+        ? `正在根据反思评审意见修正并生成 PRD 草稿（当前第 ${attempt} 次尝试）...`
+        : "正在把需求洞察和 MVP 范围写成 PRD 草稿。",
+      successMessage: (output) => `PRD 草稿《${output.prd.title}》已生成。`,
+      messages: buildPrdAgentMessages({ research, strategy }, businessContext, criticFeedback),
+      parser: parsePrdAgentJson,
+      expectedShape: multiAgentExpectedShapes.prd,
+      timeoutEnvName: "DEEPSEEK_PRD_TIMEOUT_MS",
+      fallbackTimeoutMs: 75_000,
+      trace,
+      runId,
+      onProgress,
+    })
+
+    // 3.2 Run Delivery Agent
+    delivery = await runJsonAgent<DeliveryAgentOutput>({
+      agentName: "Delivery Agent",
+      traceId: "delivery_agent",
+      step: `Delivery Agent (第 ${attempt} 次尝试)`,
+      runningMessage: attempt > 1
+        ? `正在根据反思评审意见修正并生成研发任务与飞书摘要（当前第 ${attempt} 次尝试）...`
+        : "正在拆解研发任务并生成飞书评审摘要。",
+      successMessage: (output) => `已拆解 ${output.engineeringTasks.length} 条研发任务草稿。`,
+      messages: buildDeliveryAgentMessages({ research, strategy, prd }, businessContext, criticFeedback),
+      parser: parseDeliveryAgentJson,
+      expectedShape: multiAgentExpectedShapes.delivery,
+      timeoutEnvName: "DEEPSEEK_DELIVERY_TIMEOUT_MS",
+      fallbackTimeoutMs: 75_000,
+      trace,
+      runId,
+      onProgress,
+    })
+
+    const tempContext: MultiAgentContext = {
+      research,
+      strategy,
+      prd,
+      delivery,
+    }
+
+    // 3.3 Run Critic Agent (Self-Reflection Check)
+    const critic = await runJsonAgent<CriticAgentOutput>({
+      agentName: "Critic Agent" as any,
+      traceId: "critic_agent",
+      step: `Critic Agent 自我反思`,
+      runningMessage: "正在对生成的 PRD 和研发工单任务进行自动化对比与合规审计校验...",
+      successMessage: (output) => output.passed 
+        ? "✓ 自我反思审计通过：PRD 与工程工单完全符合 MVP 范围及依赖规范。"
+        : `✗ 自我反思校验未通过：${output.feedback?.slice(0, 50)}...`,
+      messages: buildCriticAgentMessages(tempContext, businessContext),
+      parser: parseCriticAgentJson,
+      expectedShape: (multiAgentExpectedShapes as any).critic,
+      timeoutEnvName: "DEEPSEEK_CRITIC_TIMEOUT_MS",
+      fallbackTimeoutMs: 60_000,
+      trace,
+      runId,
+      onProgress,
+    })
+
+    if (critic.passed || attempt === maxAttempts) {
+      let criticEvent: TraceEvent
+      if (!critic.passed) {
+        criticEvent = createTraceEvent(`critic_completed`, "Critic Agent 自我反思", "success", `！已达到最大反思次数，停止自动修正。上一轮反馈：${critic.feedback}`)
+      } else {
+        criticEvent = createTraceEvent(`critic_completed`, "Critic Agent 自我反思", "success", "✓ 自我反思审计完全通过！流程进入等待人工审批阶段。")
+      }
+      replaceTraceEvent(trace, criticEvent)
+      replaceTraceEvents(runId, trace)
+      onProgress?.(criticEvent)
+      break
+    } else {
+      criticFeedback = critic.feedback
+      const refundEvent = createTraceEvent(`critic_feedback_logged`, `自我反思修正 (第 ${attempt} 次驳回)`, "success", `反思驳回反馈意见：${critic.feedback}`)
+      replaceTraceEvent(trace, refundEvent)
+      replaceTraceEvents(runId, trace)
+      onProgress?.(refundEvent)
+    }
+  }
 
   const context: MultiAgentContext = {
     research,
     strategy,
-    prd,
-    delivery,
+    prd: prd!,
+    delivery: delivery!,
   }
   const resultWithTrace = attachTrace(composeAgentResult(context), trace)
+  
+  // Fire progress events for orchestrator and approval steps to update frontend timeline
+  const orchestratorEvent = resultWithTrace.trace.find((e) => e.id === "orchestrator_completed")
+  if (orchestratorEvent) {
+    onProgress?.(orchestratorEvent)
+  }
+  const approvalEvent = resultWithTrace.trace.find((e) => e.id === "waiting_for_approval")
+  if (approvalEvent) {
+    onProgress?.(approvalEvent)
+  }
+
   replaceTraceEvents(runId, resultWithTrace.trace)
 
   return resultWithTrace
 }
 
 type RunJsonAgentInput<T> = {
-  agentName: "Research Agent" | "Strategy Agent" | "PRD Agent" | "Delivery Agent"
+  agentName: "Research Agent" | "Strategy Agent" | "PRD Agent" | "Delivery Agent" | "Critic Agent"
   traceId: string
   step: string
   runningMessage: string
@@ -262,6 +380,7 @@ type RunJsonAgentInput<T> = {
   fallbackTimeoutMs: number
   trace: TraceEvent[]
   runId: string
+  onProgress?: (event: TraceEvent) => void
 }
 
 async function runJsonAgent<T>({
@@ -277,24 +396,31 @@ async function runJsonAgent<T>({
   fallbackTimeoutMs,
   trace,
   runId,
+  onProgress,
 }: RunJsonAgentInput<T>): Promise<T> {
-  replaceTraceEvent(trace, createTraceEvent(`${traceId}_running`, step, "running", runningMessage))
+  const runningEvent = createTraceEvent(`${traceId}_running`, step, "running", runningMessage)
+  replaceTraceEvent(trace, runningEvent)
   replaceTraceEvents(runId, trace)
+  onProgress?.(runningEvent)
 
   try {
     const rawResponse = await createDeepSeekChatCompletion({
       messages,
       timeoutMs: getLlmTimeoutMs(timeoutEnvName, fallbackTimeoutMs),
     })
-    const output = await parseWithSingleRetry(rawResponse, parser, agentName, expectedShape)
+    const output = await parseWithSingleRetry(rawResponse, parser, agentName as any, expectedShape)
 
-    replaceTraceEvent(trace, createTraceEvent(`${traceId}_completed`, step, "success", successMessage(output)))
+    const successEvent = createTraceEvent(`${traceId}_completed`, step, "success", successMessage(output))
+    replaceTraceEvent(trace, successEvent)
     replaceTraceEvents(runId, trace)
+    onProgress?.(successEvent)
 
     return output
   } catch (error) {
-    replaceTraceEvent(trace, createTraceEvent(`${traceId}_failed`, step, "failed", toAgentRunErrorMessage(error)))
+    const failedEvent = createTraceEvent(`${traceId}_failed`, step, "failed", toAgentRunErrorMessage(error))
+    replaceTraceEvent(trace, failedEvent)
     replaceTraceEvents(runId, trace)
+    onProgress?.(failedEvent)
 
     if (error instanceof DeepSeekClientError) {
       throw new AgentRunError(mapDeepSeekCode(error.code), `${agentName} 执行失败：${error.message}`, fixForDeepSeekError(error.code), [...trace], {

@@ -5,6 +5,7 @@ import { getFeishuEventBotRuntimeConfig } from "@/lib/feishu/eventBot"
 import { getFeishuOAuthRuntimeConfig, hasFeishuOAuthToken } from "@/lib/feishu/oauth"
 import { getFeishuWebhookConfig } from "@/lib/feishu/sendWebhook"
 import { getTapdRuntimeConfig } from "@/lib/tapd/createTapdWorkItems"
+import { getEmbeddingEngineStatus } from "@/lib/llm/embeddingClient"
 
 export async function GET() {
   const feishuConfig = getFeishuWebhookConfig()
@@ -13,6 +14,7 @@ export async function GET() {
   const eventBotConfig = getFeishuEventBotRuntimeConfig()
   const oauthConfig = getFeishuOAuthRuntimeConfig()
   const tapdConfig = getTapdRuntimeConfig()
+  const embeddingStatus = getEmbeddingEngineStatus()
 
   return NextResponse.json({
     ok: true,
@@ -37,5 +39,8 @@ export async function GET() {
     tapdOwnerConfigured: tapdConfig.ownerConfigured,
     tapdIterationConfigured: tapdConfig.iterationConfigured,
     model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+    embeddingConfigured: embeddingStatus.configured,
+    embeddingEngine: embeddingStatus.engine,
+    embeddingModel: embeddingStatus.model,
   })
 }

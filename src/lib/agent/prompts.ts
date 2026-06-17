@@ -5,6 +5,7 @@ import type {
   PrdAgentOutput,
   ResearchAgentOutput,
   StrategyAgentOutput,
+  CriticAgentOutput,
 } from "@/lib/agent/multiAgentTypes"
 import type { BusinessContext, FeedbackItem } from "@/types/product"
 
@@ -304,6 +305,33 @@ ${businessContextRules}
   "feishuReviewMessage": "string"
 }`
 
+const criticAgentPrompt = `你是 PMOpsAgent 的 Critic Agent。
+你的职责是作为一个严格的评审专家，对生成的 PRD 草稿和研发任务（工程任务）草稿进行深度审查，校验其是否满足 Strategy Agent 给出的 MVP 范围限制。
+
+必须校验以下内容：
+1. mustHaveCovered：Strategy Agent 中的 mustHave 功能点，是否已经在 PRD 功能需求（functionalRequirements）或目标（goals）中全部实现？不能遗漏任何一个 P0 功能。
+2. outOfScopeExcluded：Strategy Agent 中的 outOfScope 排除项，是否绝对没有出现在 PRD 功能需求中？绝不能在第一版做本应该排除在外的功能。
+3. dependenciesLogical：研发任务（engineeringTasks）的依赖关系（dependsOn）是否逻辑合理？是否存在环形依赖，或者任务指向不存在的任务标题？
+4. risksAddressed：Research Agent 中识别出的 risks (特别是 level 为 high 的)，是否已经在 PRD 的 goals、非目标（nonGoals）或功能中有了规避描述？
+
+输出格式：
+- 如果上述所有项均通过，且整个交付文档质量高，则 passed 应设为 true。
+- 如果任何一项未通过，则 passed 设为 false，并且必须在 feedback 中给出非常详尽、指出具体问题的修改意见，告诉 PRD Agent 和 Delivery Agent 如何修改。
+
+${sharedRules}
+
+输出 JSON 形状必须匹配：
+{
+  "passed": true,
+  "feedback": "若 passed 为 false，请在此写下具体的修改建议，描述哪些功能缺失、哪些被排除的功能被做了、哪些任务存在逻辑问题；若 passed 为 true，请在此处写 'Verification passed.'",
+  "checks": {
+    "mustHaveCovered": true,
+    "outOfScopeExcluded": true,
+    "dependenciesLogical": true,
+    "risksAddressed": true
+  }
+}`
+
 export function buildFeedbackAnalysisMessages(feedbackItems: FeedbackItem[], productHint?: string): ChatMessage[] {
   return [
     {
@@ -358,31 +386,96 @@ export function buildStrategyAgentMessages(research: ResearchAgentOutput, busine
   ]
 }
 
-export function buildPrdAgentMessages(context: Pick<MultiAgentContext, "research" | "strategy">, businessContext?: BusinessContext): ChatMessage[] {
-  return [
+export function buildPrdAgentMessages(
+  context: Pick<MultiAgentContext, "research" | "strategy">,
+  businessContext?: BusinessContext,
+  criticFeedback?: string,
+): ChatMessage[] {
+  const userContentObj: any = { ...context, businessContext: normalizeBusinessContextForPrompt(businessContext) };
+  if (criticFeedback) {
+    userContentObj.criticFeedback = criticFeedback;
+  }
+
+  const messages: ChatMessage[] = [
     {
       role: "system",
       content: prdAgentPrompt,
     },
     {
       role: "user",
-      content: JSON.stringify({ ...context, businessContext: normalizeBusinessContextForPrompt(businessContext) }, null, 2),
+      content: JSON.stringify(userContentObj, null, 2),
     },
-  ]
+  ];
+
+  if (criticFeedback) {
+    messages.push({
+      role: "user",
+      content: `【重要修改指引】在上一轮自我反思审查中，你的输出未通过校验。请严格根据以下反馈意见进行修正，重新生成完整合法的 PRD 结果：\n${criticFeedback}`,
+    });
+  }
+
+  return messages;
 }
 
-export function buildDeliveryAgentMessages(context: Pick<MultiAgentContext, "research" | "strategy" | "prd">, businessContext?: BusinessContext): ChatMessage[] {
-  return [
+export function buildDeliveryAgentMessages(
+  context: Pick<MultiAgentContext, "research" | "strategy" | "prd">,
+  businessContext?: BusinessContext,
+  criticFeedback?: string,
+): ChatMessage[] {
+  const userContentObj: any = { ...context, businessContext: normalizeBusinessContextForPrompt(businessContext) };
+  if (criticFeedback) {
+    userContentObj.criticFeedback = criticFeedback;
+  }
+
+  const messages: ChatMessage[] = [
     {
       role: "system",
       content: deliveryAgentPrompt,
     },
     {
       role: "user",
-      content: JSON.stringify({ ...context, businessContext: normalizeBusinessContextForPrompt(businessContext) }, null, 2),
+      content: JSON.stringify(userContentObj, null, 2),
+    },
+  ];
+
+  if (criticFeedback) {
+    messages.push({
+      role: "user",
+      content: `【重要修改指引】在上一轮自我反思审查中，你的输出未通过校验。请严格根据以下反馈意见进行修正，重新生成完整合法的研发任务与评审摘要：\n${criticFeedback}`,
+    });
+  }
+
+  return messages;
+}
+
+export function buildCriticAgentMessages(
+  context: MultiAgentContext,
+  businessContext?: BusinessContext,
+): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: criticAgentPrompt,
+    },
+    {
+      role: "user",
+      content: JSON.stringify(
+        {
+          research: {
+            risks: context.research.risks,
+          },
+          strategy: context.strategy,
+          prd: context.prd,
+          delivery: context.delivery,
+          businessContext: normalizeBusinessContextForPrompt(businessContext),
+        },
+        null,
+        2,
+      ),
     },
   ]
 }
+
 
 export function buildJsonRepairMessages(rawResponse: string, validationMessage: string): ChatMessage[] {
   return [
@@ -455,6 +548,16 @@ export const multiAgentExpectedShapes = {
   "engineeringTasks": [],
   "feishuReviewMessage": "string"
 }`,
+  critic: `{
+  "passed": true,
+  "feedback": "string",
+  "checks": {
+    "mustHaveCovered": true,
+    "outOfScopeExcluded": true,
+    "dependenciesLogical": true,
+    "risksAddressed": true
+  }
+}`
 }
 
 function normalizeBusinessContextForPrompt(businessContext: BusinessContext | undefined) {

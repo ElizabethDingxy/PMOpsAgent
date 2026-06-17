@@ -2,6 +2,11 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { DemandCluster, EngineeringTask, FeedbackItem, RiceItem, SavedAgentRun } from "@/types/product"
+import {
+  rankProductMemories,
+  rankMemoryContext,
+  upsertProjectVectorsFromMemory,
+} from "./vectorStore"
 
 const memoryDir = path.join(process.cwd(), "data", "product-memory")
 const runsDir = path.join(process.cwd(), "data", "runs")
@@ -110,6 +115,11 @@ export async function upsertProductMemoryFromSavedRun(savedRun: SavedAgentRun): 
 
   await writeFile(getMemoryPath(key), JSON.stringify(memory, null, 2), "utf8")
 
+  // Generate and save vectors in the background
+  await upsertProjectVectorsFromMemory(memory).catch((err) => {
+    console.error(`[VectorStore] Failed to generate/save vectors for project ${key}:`, err)
+  })
+
   return memory
 }
 
@@ -137,33 +147,17 @@ export async function listProductMemories(): Promise<ProductMemory[]> {
 
 export async function searchProductMemories(query: string, limit = 8): Promise<ProductMemorySearchResult[]> {
   const memories = await listProductMemories()
-  const normalizedQuery = inferMemorySearchQuery(query)
+  if (memories.length === 0) return []
 
-  return memories
-    .map((memory) => {
-      const fields = {
-        name: memory.displayName,
-        aliases: memory.aliases.join(" "),
-        source: memory.sourceLabels.join(" "),
-        summary: memory.summary,
-        prd: memory.artifacts.prdTitle,
-      }
-      const scoredFields = Object.entries(fields)
-        .map(([field, value]) => ({
-          field,
-          score: scoreMemoryMatch(normalizedQuery, value),
-        }))
-        .filter((item) => item.score > 0)
-      const score = scoredFields.reduce((sum, item) => sum + item.score, 0)
+  const ranked = await rankProductMemories(query, memories)
 
-      return {
-        memory,
-        score,
-        matchedFields: scoredFields.map((item) => item.field),
-      }
-    })
-    .filter((item) => item.score > 0 || !normalizedQuery)
-    .sort((a, b) => b.score - a.score || b.memory.updatedAt.localeCompare(a.memory.updatedAt))
+  return ranked
+    .map((item) => ({
+      memory: item.memory,
+      score: item.score,
+      matchedFields: ["vector_similarity"],
+    }))
+    .filter((item) => item.score > 0 || !query.trim())
     .slice(0, limit)
 }
 
@@ -290,41 +284,29 @@ export async function searchProductMemoryContext(input: {
   const memories = projectMatches.length > 0 ? projectMatches.map((match) => match.memory) : await listProductMemories()
   const query = input.query
 
-  return memories.slice(0, input.limit ?? 5).map((memory) => {
-    const decisions = memory.decisions
-      .map((decision) => ({
-        ...decision,
-        score: scoreMemoryMatch(query, `${decision.title} ${decision.description} ${decision.priority ?? ""} ${decision.rationale ?? ""} ${decision.evidenceFeedbackIds.join(" ")}`),
-      }))
-      .filter((decision) => decision.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8)
-    const evidence = memory.evidence
-      .map((item) => ({
-        ...item,
-        score: scoreMemoryMatch(query, `${item.id} ${item.content} ${item.source ?? ""} ${item.userType ?? ""}`),
-      }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8)
+  const results = await Promise.all(
+    memories.slice(0, input.limit ?? 5).map(async (memory) => {
+      const ranked = await rankMemoryContext(query, memory)
+      return {
+        memory: {
+          key: memory.key,
+          displayName: memory.displayName,
+          aliases: memory.aliases,
+          sourceLabels: memory.sourceLabels,
+          latestRunId: memory.latestRunId,
+          summary: memory.summary,
+          artifacts: memory.artifacts,
+        },
+        decisions: ranked.decisions,
+        evidence: ranked.evidence,
+      }
+    })
+  )
 
-    return {
-      memory: {
-        key: memory.key,
-        displayName: memory.displayName,
-        aliases: memory.aliases,
-        sourceLabels: memory.sourceLabels,
-        latestRunId: memory.latestRunId,
-        summary: memory.summary,
-        artifacts: memory.artifacts,
-      },
-      decisions,
-      evidence,
-    }
-  })
+  return results
 }
 
-function deriveProjectKey(savedRun: SavedAgentRun) {
+export function deriveProjectKey(savedRun: SavedAgentRun) {
   const basis = savedRun.sourceLabel?.trim() || savedRun.run.result.productName || savedRun.run.result.prd.title || savedRun.id
   const hash = createHash("sha1").update(normalizeMemoryText(basis)).digest("hex").slice(0, 16)
 
