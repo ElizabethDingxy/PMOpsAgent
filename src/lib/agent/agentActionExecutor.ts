@@ -505,9 +505,10 @@ export async function syncTapdStatusForRun(runId: string) {
 
   const storyId = savedRun.run.result.tapdWorkItems?.story.id
   const syncedTasks = savedRun.run.result.engineeringTasks.filter((t) => t.tapdTaskId)
-  const taskIds = syncedTasks.map((t) => t.tapdTaskId!)
+  const taskIds = syncedTasks.filter((t) => t.type === "Task").map((t) => t.tapdTaskId!)
+  const subStoryIds = syncedTasks.filter((t) => t.type === "Epic" || t.type === "Story").map((t) => t.tapdTaskId!)
 
-  if (!storyId && taskIds.length === 0) {
+  if (!storyId && taskIds.length === 0 && subStoryIds.length === 0) {
     throw new AgentActionError("ACTION_PAYLOAD_INVALID", "当前会话尚未同步任何 TAPD 工单，无法同步状态。", "请先将任务同步至 TAPD。")
   }
 
@@ -515,7 +516,7 @@ export async function syncTapdStatusForRun(runId: string) {
 
   try {
     const { getTapdWorkItemsStatus } = await import("@/lib/tapd/createTapdWorkItems")
-    const statusResult = await getTapdWorkItemsStatus(workspaceId, storyId, taskIds)
+    const statusResult = await getTapdWorkItemsStatus(workspaceId, storyId, taskIds, subStoryIds)
 
     let modified = false
     const updatedTasks = savedRun.run.result.engineeringTasks.map((task) => {

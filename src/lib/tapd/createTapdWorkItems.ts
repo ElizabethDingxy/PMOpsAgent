@@ -167,33 +167,85 @@ export async function createTapdWorkItems(
     story = await createTapdStory(config, result)
   }
 
-  const tasks: CreatedTapdItem[] = []
+  const tasksMap: Record<number, CreatedTapdItem> = {}
   const updatedTasks = [...result.engineeringTasks]
 
-  // 2. Loop and Sync Tasks (Incremental)
+  // 2. Pass 1: Sync Epic and Story types (Sub-stories in TAPD)
   for (const index of selectedTaskIndexes) {
     const task = updatedTasks[index]
     if (!task) continue
 
-    if (task.tapdTaskId && task.tapdTaskUrl) {
-      // Task already synced, skip creating but include in results
-      tasks.push({
-        id: task.tapdTaskId,
-        title: task.title,
-        url: task.tapdTaskUrl,
-      })
-    } else {
-      // Create new task
-      const createdTask = await createTapdTask(config, task, story.id, result)
-      tasks.push(createdTask)
+    if (task.type === "Epic" || task.type === "Story") {
+      if (task.tapdTaskId && task.tapdTaskUrl) {
+        // Already synced
+        tasksMap[index] = {
+          id: task.tapdTaskId,
+          title: task.title,
+          url: task.tapdTaskUrl,
+        }
+      } else {
+        // Create new sub-story
+        const createdSubStory = await createTapdSubStory(config, task, story.id, result)
+        tasksMap[index] = createdSubStory
 
-      // Update local task properties
-      updatedTasks[index] = {
-        ...task,
-        tapdTaskId: createdTask.id,
-        tapdTaskUrl: createdTask.url,
-        tapdTaskStatus: "未开始",
+        // Update local task properties
+        updatedTasks[index] = {
+          ...task,
+          tapdTaskId: createdSubStory.id,
+          tapdTaskUrl: createdSubStory.url,
+          tapdTaskStatus: "未开始",
+        }
       }
+    }
+  }
+
+  // 3. Pass 2: Sync Task types (Tasks in TAPD)
+  for (const index of selectedTaskIndexes) {
+    const task = updatedTasks[index]
+    if (!task) continue
+
+    if (task.type === "Task") {
+      if (task.tapdTaskId && task.tapdTaskUrl) {
+        // Already synced
+        tasksMap[index] = {
+          id: task.tapdTaskId,
+          title: task.title,
+          url: task.tapdTaskUrl,
+        }
+      } else {
+        // Find parent story/epic by checking dependencies
+        let targetStoryId = story.id
+        if (task.dependsOn && task.dependsOn.length > 0) {
+          const parentStory = updatedTasks.find(
+            (t) => (t.type === "Epic" || t.type === "Story") &&
+                   task.dependsOn?.includes(t.title) &&
+                   t.tapdTaskId
+          )
+          if (parentStory && parentStory.tapdTaskId) {
+            targetStoryId = parentStory.tapdTaskId
+          }
+        }
+
+        // Create new task
+        const createdTask = await createTapdTask(config, task, targetStoryId, result)
+        tasksMap[index] = createdTask
+
+        // Update local task properties
+        updatedTasks[index] = {
+          ...task,
+          tapdTaskId: createdTask.id,
+          tapdTaskUrl: createdTask.url,
+          tapdTaskStatus: "未开始",
+        }
+      }
+    }
+  }
+
+  // 4. Reconstruct tasks array in original order
+  const tasks: CreatedTapdItem[] = []
+  for (const index of selectedTaskIndexes) {
+    if (tasksMap[index]) {
+      tasks.push(tasksMap[index])
     }
   }
 
@@ -276,13 +328,50 @@ async function createTapdStory(config: TapdConfig, result: AgentResult): Promise
   }
 }
 
+async function createTapdSubStory(
+  config: TapdConfig,
+  task: EngineeringTask,
+  parentId: string,
+  result: AgentResult,
+): Promise<CreatedTapdItem> {
+  const payload = await postTapd<TapdStoryPayload>(
+    config,
+    "stories",
+    {
+      workspace_id: config.workspaceId,
+      name: task.title,
+      description: formatTaskDescription(task, result),
+      parent_id: parentId,
+      priority_label: priorityToTapdLabel(task.priority),
+      label: `PMOpsAgent|${task.type}|${task.priority}`,
+      ...(config.owner ? { owner: config.owner } : {}),
+      ...(config.creator ? { creator: config.creator } : {}),
+      ...(config.iterationId ? { iteration_id: config.iterationId } : {}),
+    },
+    "TAPD_CREATE_STORY_FAILED",
+    `创建 TAPD 子需求失败：${task.title}`,
+  )
+
+  const id = payload.data?.Story?.id
+
+  if (!id) {
+    throw new TapdError("TAPD_CREATE_STORY_FAILED", `TAPD 子需求创建成功但未返回 ID：${task.title}`, "请刷新 TAPD 项目需求列表确认是否已创建。")
+  }
+
+  return {
+    id,
+    title: payload.data?.Story?.name || task.title,
+    url: `${config.webBaseUrl}/${config.workspaceId}/prong/stories/view/${id}`,
+  }
+}
+
 async function createTapdTask(config: TapdConfig, task: EngineeringTask, storyId: string, result: AgentResult): Promise<CreatedTapdItem> {
   const payload = await postTapd<TapdTaskPayload>(
     config,
     "tasks",
     {
       workspace_id: config.workspaceId,
-      name: `[${task.type}] ${task.title}`,
+      name: task.title,
       description: formatTaskDescription(task, result),
       story_id: storyId,
       priority_label: priorityToTapdLabel(task.priority),
@@ -560,13 +649,15 @@ export async function getTapdWorkItemsStatus(
   workspaceId: string,
   storyId?: string,
   taskIds: string[] = [],
+  subStoryIds: string[] = [],
 ): Promise<TapdStatusSyncResult> {
   const isConfigured = getTapdRuntimeConfig().configured
   if (!isConfigured) {
     // Fallback Mock Mode status sync
     const mockStatuses: Record<string, string> = {}
     const possibleStatuses = ["未开始", "进行中", "已解决", "已关闭"]
-    taskIds.forEach((id) => {
+    const allIds = [...taskIds, ...subStoryIds]
+    allIds.forEach((id) => {
       const hash = id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
       mockStatuses[id] = possibleStatuses[hash % possibleStatuses.length]
     })
@@ -623,6 +714,34 @@ export async function getTapdWorkItemsStatus(
       })
     } catch (e) {
       console.error("Failed to fetch TAPD tasks status:", e)
+    }
+  }
+
+  // 3. Fetch Sub-stories Status
+  if (subStoryIds.length > 0) {
+    try {
+      const idsParam = subStoryIds.join(",")
+      const subStoryPayload = await getTapd<any>(
+        config,
+        `stories?workspace_id=${workspaceId}&id=${idsParam}`,
+        "TAPD_LIST_PROJECTS_FAILED" as any,
+        "获取 TAPD 子需求状态失败",
+      )
+
+      const storyList = Array.isArray(subStoryPayload.data)
+        ? subStoryPayload.data
+        : subStoryPayload.data
+        ? [subStoryPayload.data]
+        : []
+
+      storyList.forEach((item: any) => {
+        const storyObj = item?.Story ?? item
+        if (storyObj && storyObj.id) {
+          taskStatuses[String(storyObj.id)] = mapTapdStatusLabel(storyObj.status)
+        }
+      })
+    } catch (e) {
+      console.error("Failed to fetch TAPD sub-stories status:", e)
     }
   }
 

@@ -1745,13 +1745,9 @@ function appendPrdDocumentLink(message: string, url: string | undefined) {
 }
 
 function appendTapdLinks(message: string, created: TapdCreatedPayload) {
-  const links = [
-    `TAPD 需求：${created.story.url}`,
-    ...created.tasks.map((task) => `TAPD 任务：${task.url}`),
-  ]
-  const newLinks = links.filter((link) => !message.includes(link))
+  if (!created.story.url) return message
+  const link = `TAPD 需求：${created.story.url}`
+  if (message.includes(created.story.url)) return message
 
-  if (newLinks.length === 0) return message
-
-  return `${message.trim()}\n\n${newLinks.join("\n")}`
+  return `${message.trim()}\n\n${link}`
 }
